@@ -1,0 +1,38 @@
+# pre-commit hooks (SPEC-ADDENDUM-TOOLCHAIN A1).
+# Install: pre-commit install
+# Run all: pre-commit run --all-files
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v19.1.7
+    hooks:
+      - id: clang-format
+        types_or: [c, c++]
+        exclude: ^third_party/
+
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.1
+    hooks:
+      - id: codespell
+        args: ["--ignore-words-list=ba,fo,nd"]
+        exclude: ^third_party/
+
+  - repo: local
+    hooks:
+      - id: clang-tidy
+        name: clang-tidy (changed files)
+        entry: scripts/tidy.sh
+        language: system
+        files: \.(c|h)$
+        exclude: ^third_party/
+        pass_filenames: true

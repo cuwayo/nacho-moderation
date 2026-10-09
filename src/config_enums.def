@@ -1,0 +1,13 @@
+/* config_enums.def - single source of truth for CFG_ENUM value sets.
+ *
+ * SPEC-ADDENDUM-SSOT S3. Included by src/config.c; never compiled on its own.
+ * One E(key_id, value) row per allowed value, in the order they appear in docs.
+ *
+ *   E(key_id, value)   key_id matches a CFG_ENUM K(...) row in config.def
+ */
+E(MODE, "polling")
+E(MODE, "webhook")
+E(LOG_LEVEL, "error")
+E(LOG_LEVEL, "warn")
+E(LOG_LEVEL, "info")
+E(LOG_LEVEL, "debug")

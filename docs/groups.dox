@@ -1,0 +1,66 @@
+/* groups.dox - Doxygen module groups (SPEC-ADDENDUM-DOCS D5).
+ *
+ * Every public symbol belongs to exactly one group via @ingroup. The group names
+ * here are the closed set referenced across the codebase; C12 checks that every
+ * @ingroup used in src/ is defined in this file.
+ */
+
+/**
+ * @defgroup loop Event loop and io_uring
+ * @brief Ring setup, SQE submission, CQE dispatch, timers, and eventfd.
+ */
+
+/**
+ * @defgroup net Network connections
+ * @brief TCP connection state machine and socket lifecycle.
+ */
+
+/**
+ * @defgroup tls TLS adapter
+ * @brief OpenSSL memory-BIO pump driven by io_uring.
+ */
+
+/**
+ * @defgroup http HTTP client
+ * @brief Request builder and incremental response parser.
+ */
+
+/**
+ * @defgroup api Telegram Bot API client
+ * @brief Method wrappers, connection pool, rate limiter, retries.
+ */
+
+/**
+ * @defgroup router Update routing
+ * @brief Update parsing and dispatch to command handlers.
+ */
+
+/**
+ * @defgroup commands Commands
+ * @brief Command table, handlers, and /help rendering.
+ */
+
+/**
+ * @defgroup automod Automated moderation
+ * @brief Locks, blacklist, antiflood, and captcha.
+ */
+
+/**
+ * @defgroup perms Permissions
+ * @brief Admin cache and permission checks.
+ */
+
+/**
+ * @defgroup db Persistence
+ * @brief SQLite worker thread and job queue.
+ */
+
+/**
+ * @defgroup cache In-memory cache
+ * @brief Hash map with TTL for hot data.
+ */
+
+/**
+ * @defgroup util Utilities
+ * @brief Arena allocator, string builder, duration parser, logging, SSOT tables.
+ */

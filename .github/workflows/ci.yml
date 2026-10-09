@@ -1,0 +1,308 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *" # nightly soak + extended fuzzing
+  release:
+    types: [published]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CTEST_OUTPUT_ON_FAILURE: "1"
+
+jobs:
+  lint:
+    name: lint (format, tidy, cppcheck, codespell)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-format clang-tidy cppcheck codespell ninja-build pkg-config \
+            liburing-dev libssl-dev libsqlite3-dev libpcre2-dev
+      - name: Configure (for compile_commands.json)
+        run: cmake --preset debug
+      - name: clang-format (check)
+        run: cmake --build --preset debug --target format-check
+      - name: clang-tidy
+        run: cmake --build --preset debug --target tidy
+      - name: cppcheck
+        run: cmake --build --preset debug --target cppcheck
+      - name: codespell
+        run: codespell --ignore-words-list=ba,fo,nd --skip=third_party,build .
+      - name: Generated blocks up to date
+        run: |
+          cmake --build --preset debug
+          cmake --build --preset debug --target docs-update
+          git diff --exit-code -- README.md docs config
+
+  docs-lint:
+    name: docs-lint (markdownlint, lychee)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: markdownlint
+        run: npx --yes markdownlint-cli2 "**/*.md" "#third_party" "#build"
+      - name: lychee (internal links)
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --offline --no-progress "README.md" "docs/**/*.md"
+          fail: true
+
+  docs-build:
+    name: docs-build (Doxygen)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config doxygen graphviz \
+            liburing-dev libssl-dev libsqlite3-dev libpcre2-dev
+      - name: Configure + build docs (warnings as errors)
+        run: |
+          cmake --preset debug
+          cmake --build --preset debug --target docs-check
+      - name: Upload docs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-html
+          path: build/debug/docs/html
+          if-no-files-found: warn
+
+  docs-consistency:
+    name: docs-consistency (SSOT checks C1-C5)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config \
+            liburing-dev libssl-dev libsqlite3-dev libpcre2-dev
+      - name: Configure + build
+        run: |
+          cmake --preset debug
+          cmake --build --preset debug
+      - name: check_consistency.py
+        run: scripts/check_consistency.py --bin build/debug/tgbot --format github
+
+  build-matrix:
+    name: build (${{ matrix.compiler }}, ${{ matrix.preset }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        preset: [debug, release]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config ccache \
+            liburing-dev libssl-dev libsqlite3-dev libpcre2-dev
+          sudo apt-get install -y --no-install-recommends gcc clang
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: build-${{ matrix.compiler }}-${{ matrix.preset }}
+      - name: Configure
+        run: >
+          cmake --preset ${{ matrix.preset }}
+          -DCMAKE_C_COMPILER=${{ matrix.compiler }}
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+      - name: Build (-Werror)
+        run: cmake --build --preset ${{ matrix.preset }}
+
+  test-asan:
+    name: test (asan)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config liburing-dev libssl-dev libsqlite3-dev libpcre2-dev
+      - name: Configure + build
+        run: |
+          cmake --preset asan
+          cmake --build --preset asan
+      - name: Test under ASan/LSan/UBSan
+        run: ctest --preset asan --output-on-failure
+
+  test-tsan:
+    name: test (tsan)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config liburing-dev libssl-dev libsqlite3-dev libpcre2-dev
+      - name: Configure + build
+        run: |
+          cmake --preset tsan
+          cmake --build --preset tsan
+      - name: Test under TSan
+        run: ctest --preset tsan --output-on-failure
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config gcovr \
+            liburing-dev libssl-dev libsqlite3-dev libpcre2-dev
+      - name: Configure + build + test
+        run: |
+          cmake --preset coverage
+          cmake --build --preset coverage
+          ctest --preset coverage --output-on-failure
+      - name: Generate report
+        run: cmake --build --preset coverage --target coverage
+      - name: Enforce thresholds (line >= 80%)
+        run: >
+          gcovr --root .
+          --filter "${GITHUB_WORKSPACE}/src/"
+          --filter "${GITHUB_WORKSPACE}/include/"
+          --exclude "${GITHUB_WORKSPACE}/third_party/"
+          --exclude "${GITHUB_WORKSPACE}/src/main.c"
+          --fail-under-line 80
+          --print-summary
+          build/coverage
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: build/coverage/coverage/
+          if-no-files-found: warn
+
+  fuzz-smoke:
+    name: fuzz-smoke (60s/target)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang ninja-build pkg-config \
+            liburing-dev libssl-dev libsqlite3-dev libpcre2-dev
+      - name: Configure + build (Clang libFuzzer)
+        run: |
+          cmake --preset fuzz
+          cmake --build --preset fuzz
+      - name: Run each fuzz target for 60s
+        run: |
+          set -euo pipefail
+          mkdir -p fuzz-artifacts
+          for bin in $(find build/fuzz/tests/fuzz -maxdepth 1 -type f -executable -name 'fuzz_*'); do
+            echo "::group::${bin}"
+            "${bin}" -max_total_time=60 -artifact_prefix=fuzz-artifacts/ || true
+            echo "::endgroup::"
+          done
+      - name: Upload crash artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz-artifacts/
+          if-no-files-found: ignore
+
+  nightly-soak:
+    name: nightly-soak
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang ninja-build pkg-config strace \
+            liburing-dev libssl-dev libsqlite3-dev libpcre2-dev
+      - name: Build (asan)
+        run: |
+          cmake --preset asan
+          cmake --build --preset asan
+      - name: No blocking syscalls on main thread
+        run: scripts/check_blocking.sh build/asan/tgbot --self-test
+      - name: Soak test (10 min)
+        run: scripts/run_soak.sh
+      - name: Extended fuzzing (30 min/target)
+        run: |
+          cmake --preset fuzz
+          cmake --build --preset fuzz
+          for bin in $(find build/fuzz/tests/fuzz -maxdepth 1 -type f -executable -name 'fuzz_*'); do
+            "${bin}" -max_total_time=1800 -artifact_prefix=fuzz-artifacts/ || true
+          done
+
+  release:
+    name: release
+    if: github.event_name == 'release'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config \
+            liburing-dev libssl-dev libsqlite3-dev libpcre2-dev
+      - name: Build release
+        run: |
+          cmake --preset release
+          cmake --build --preset release
+      - name: Checksums
+        run: |
+          sha256sum build/release/tgbot > tgbot.sha256
+      - name: Upload release binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: tgbot-release
+          path: |
+            build/release/tgbot
+            tgbot.sha256

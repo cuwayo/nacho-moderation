@@ -1,0 +1,17 @@
+---
+# LLVM base, Linux brace style, 4-space indent, 100 columns (SPEC-ADDENDUM-TOOLCHAIN A1).
+BasedOnStyle: LLVM
+Language: Cpp
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+BreakBeforeBraces: Linux
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+PointerAlignment: Right
+AlignAfterOpenBracket: Align
+SortIncludes: CaseSensitive
+IncludeBlocks: Preserve
+...

@@ -1,0 +1,33 @@
+/* config.def - single source of truth for configuration keys.
+ *
+ * SPEC-ADDENDUM-SSOT S3. This file is #include-ed (never compiled on its own), so
+ * it has no include guard and no declarations: only K(...) rows and a trailing
+ * CFG_REQUIRED(...) list. Every inclusion site must define BOTH macros.
+ *
+ *   K(id, toml_key, env_var, type, default, restart, secret, brief)
+ *
+ *   id         UPPER_SNAKE, unique, becomes CFG_<id>
+ *   toml_key   dotted lowercase key in config.toml (e.g. "api.pool_size")
+ *   env_var    environment variable name (UPPER_SNAKE)
+ *   type       CFG_STR | CFG_INT | CFG_BOOL | CFG_DURATION | CFG_I64_LIST | CFG_ENUM
+ *   default    C literal as string ("" for none / required); parsed with the same
+ *              code as user input
+ *   restart    1 if changing the key needs a restart, else 0 (hot reload on SIGHUP)
+ *   secret     1 => never logged, redacted in --dump-config, sample shows placeholder
+ *   brief      1-256 chars, English, shown in --dump-config-json and docs
+ *
+ * Precedence (implemented once, driven by this table): CLI flag > env var >
+ * config file > default. Keys flagged required are listed in CFG_REQUIRED below.
+ */
+K(BOT_TOKEN, "bot_token", "BOT_TOKEN", CFG_STR, "", 1, 1, "Telegram bot token from @BotFather (required)")
+K(MODE, "mode", "MODE", CFG_ENUM, "polling", 1, 0, "Update source: polling or webhook")
+K(WEBHOOK_LISTEN, "webhook.listen", "WEBHOOK_LISTEN", CFG_STR, "127.0.0.1:8080", 1, 0, "Webhook listen address behind a TLS-terminating reverse proxy")
+K(WEBHOOK_SECRET, "webhook.secret", "WEBHOOK_SECRET", CFG_STR, "", 1, 1, "X-Telegram-Bot-Api-Secret-Token value verified on inbound webhook requests")
+K(DB_PATH, "db.path", "DB_PATH", CFG_STR, "./bot.db", 1, 0, "SQLite database file path")
+K(SUDO_IDS, "sudo_ids", "SUDO_IDS", CFG_I64_LIST, "", 1, 0, "Comma-separated Telegram user ids granted bot-level sudo")
+K(API_POOL_SIZE, "api.pool_size", "API_POOL_SIZE", CFG_INT, "4", 1, 0, "Number of keep-alive TLS connections to the Bot API")
+K(API_BASE, "api.base", "API_BASE", CFG_STR, "https://api.telegram.org", 1, 0, "Bot API base URL; a plain http:// base skips TLS for local or self-hosted deployments")
+K(LOG_LEVEL, "log.level", "LOG_LEVEL", CFG_ENUM, "info", 0, 0, "Log verbosity: error, warn, info or debug")
+
+/* Keys whose value must be provided (no usable default). */
+CFG_REQUIRED(BOT_TOKEN)

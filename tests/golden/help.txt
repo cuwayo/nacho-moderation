@@ -1,0 +1,16 @@
+tgbot 0.0.1 - asynchronous Telegram group admin bot
+
+Usage:
+  tgbot [OPTIONS]
+
+Options:
+  --config <file>       Path to config.toml (default: ./config.toml)
+  --check-config <file> Validate a config file and exit
+  --log-level <level>   Override log level (error|warn|info|debug)
+  -h, --help            Show this help and exit
+  -V, --version         Show version and exit
+
+Exit codes:
+  0   success
+  1   runtime or configuration error
+  2   usage error

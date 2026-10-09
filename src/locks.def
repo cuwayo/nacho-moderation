@@ -1,0 +1,20 @@
+/* locks.def - single source of truth for message lock types.
+ *
+ * SPEC-ADDENDUM-SSOT S4. Included by src/tables_json.c and (from M6) src/automod.c;
+ * never compiled on its own. One L(...) row per lock type.
+ *
+ *   L(id, name, bit, brief)
+ *
+ *   id      UPPER_SNAKE, unique, becomes LOCK_<id>
+ *   name    lowercase [a-z0-9_]{1,32}, the /lock and /unlock argument
+ *   bit     zero-based bit index into the chats.locks bitmask (SPEC section 6)
+ *   brief   1-256 chars, English, shown in docs and /lock help
+ */
+L(LINKS, "links", 0, "URLs and @mentions that Telegram renders as links")
+L(MEDIA, "media", 1, "Photos, videos, documents and other attachments")
+L(STICKERS, "stickers", 2, "Stickers, GIFs and animated emoji")
+L(FORWARDS, "forwards", 3, "Messages forwarded from other chats")
+L(POLLS, "polls", 4, "Polls and quizzes")
+L(INVITES, "invites", 5, "Telegram invite links (t.me/joinchat)")
+L(BOTS, "bots", 6, "Messages from other bots")
+L(COMMANDS, "commands", 7, "Slash commands from non-admins")

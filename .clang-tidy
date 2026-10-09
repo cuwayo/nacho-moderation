@@ -1,0 +1,30 @@
+# clang-tidy configuration (SPEC-ADDENDUM-TOOLCHAIN A1, A7).
+# Enabled families per the addendum; warnings are errors in CI.
+Checks: >
+  bugprone-*,
+  cert-*,
+  clang-analyzer-*,
+  misc-*,
+  performance-*,
+  readability-function-cognitive-complexity,
+  -bugprone-easily-swappable-parameters,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+
+WarningsAsErrors: '*'
+HeaderFilterRegex: '(^|/)(src|include|tests)/.*\.(c|h)$'
+FormatStyle: file
+UseColor: true
+
+CheckOptions:
+  - key: readability-function-cognitive-complexity.Threshold
+    value: '15'
+  - key: misc-header-include-cycle.IgnoredFiles
+    value: ''
+  # On glibc, <errno.h> maps its constants in through internal headers and
+  # include-cleaner does not attribute them to errno.h; ignoring errno.h stops it
+  # from demanding the non-portable internal <asm-generic/errno-base.h>.
+  # Likewise include-cleaner cannot reliably map OpenSSL and liburing symbols to
+  # their headers, so those are ignored as providers too. First-party headers are
+  # still fully checked.
+  - key: misc-include-cleaner.IgnoreHeaders
+    value: 'asm-generic/.*;bits/.*;sys/cdefs.h;errno.h;openssl/.*;liburing.h'

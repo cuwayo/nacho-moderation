@@ -1,0 +1,24 @@
+/* commands.def - single source of truth for bot commands.
+ *
+ * SPEC-ADDENDUM-SSOT S2. This file is #include-ed (never compiled on its own), so
+ * it has no include guard and no declarations: only X(...) rows.
+ *
+ *   X(id, name, min_role, user_right, bot_right, flags, usage, brief, handler)
+ *
+ *   id          UPPER_SNAKE, unique, becomes CMD_<id>
+ *   name        lowercase [a-z0-9_]{1,32}, unique, Telegram command name (without '/')
+ *   min_role    ROLE_ANYONE | ROLE_ADMIN | ROLE_OWNER | ROLE_SUDO
+ *   user_right  RIGHT_NONE | RIGHT_RESTRICT | RIGHT_DELETE | RIGHT_PIN |
+ *               RIGHT_PROMOTE | RIGHT_CHANGE_INFO (right the CALLER must hold;
+ *               owner and sudo bypass)
+ *   bot_right   same set; right the BOT must hold in the chat
+ *   flags       CMDF_* OR-ed: CMDF_TARGET, CMDF_REPLY_REQUIRED, CMDF_DURATION,
+ *               CMDF_REASON, CMDF_GROUP_ONLY, CMDF_HIDDEN
+ *   usage       argument synopsis, e.g. "[target] [duration] [reason]"
+ *   brief       1-256 chars, English, shown in /help and setMyCommands
+ *   handler     function name: int handler(cmd_ctx_t *ctx)
+ *
+ * M0 seeds only /help (S10); the remaining SPEC section 5.2 commands land with
+ * their handlers in M3-M6.
+ */
+X(HELP, "help", ROLE_ANYONE, RIGHT_NONE, RIGHT_NONE, 0, "", "Show available commands", cmd_help)

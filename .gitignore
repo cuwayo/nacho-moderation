@@ -1,0 +1,29 @@
+# Out-of-tree build directories (one per CMake preset).
+/build/
+CMakeUserPresets.json
+
+# Compiler / coverage artifacts
+*.o
+*.a
+*.so
+*.gcda
+*.gcno
+*.gcov
+coverage.xml
+coverage.html
+coverage/
+
+# Runtime data
+*.db
+*.db-wal
+*.db-shm
+
+# Python bytecode (check/docgen scripts)
+__pycache__/
+*.pyc
+
+# Editor / OS
+*.swp
+*~
+.DS_Store
+compile_commands.json

@@ -1,0 +1,24 @@
+/* errors.def - single source of truth for error classes.
+ *
+ * SPEC-ADDENDUM-SSOT S4. Drives errno-style codes, log level, retry policy and the
+ * user-visible message; feeds the error-handling table in docs/architecture.md.
+ * One E(...) row per class; never compiled on its own.
+ *
+ *   E(id, code, log_level, retry, brief)
+ *
+ *   id         UPPER_SNAKE, unique, becomes ERR_<id>
+ *   code       negative errno-style value carried by fallible functions
+ *   log_level  LOG_ERROR | LOG_WARN | LOG_INFO | LOG_DEBUG
+ *   retry      0 = do not retry, 1 = retry per the backoff policy (SPEC section 4.2)
+ *   brief      1-256 chars, English, shown in docs and logs
+ */
+E(INVAL, -22, LOG_ERROR, 0, "Invalid argument or malformed input")
+E(NOMEM, -12, LOG_ERROR, 0, "Out of memory")
+E(NET, -101, LOG_WARN, 1, "Network failure (connect, reset, timeout)")
+E(TLS, -102, LOG_ERROR, 0, "TLS handshake or certificate verification failure")
+E(HTTP, -103, LOG_WARN, 1, "Unexpected HTTP status from the Bot API")
+E(TG_API, -104, LOG_WARN, 0, "Bot API returned ok=false with a description")
+E(RATE_LIMIT, -105, LOG_INFO, 1, "HTTP 429; honour retry_after before retrying")
+E(DB, -106, LOG_ERROR, 0, "Database error from the DB worker")
+E(PARSE, -107, LOG_WARN, 0, "JSON or response parsing failure")
+E(PROTO, -108, LOG_ERROR, 0, "Protocol violation (bad HTTP, oversized body)")

@@ -1,0 +1,17 @@
+# Markdown lint configuration (markdownlint-cli2).
+# SPEC-ADDENDUM-DOCS D1. Prose docs are one-sentence-per-line friendly, so line
+# length is not enforced.
+config:
+  default: true
+  MD013: false # line length
+  MD024:
+    siblings_only: true # repeated headings under different parents are fine
+  MD033: false # inline HTML is used for generated-block markers
+  MD041: false # README starts with a title; some docs start with front matter
+  MD046:
+    style: fenced
+globs:
+  - "**/*.md"
+ignores:
+  - "third_party/**"
+  - "build/**"
