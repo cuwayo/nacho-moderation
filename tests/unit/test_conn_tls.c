@@ -312,12 +312,88 @@ static void test_tls_keep_alive_reuse(void **state)
     assert_memory_equal(conn_response(f->conn)->body, "{\"ok\":true,\"result\":{\"id\":2}}", 28);
 }
 
+/* Regression (M2): a request queued before the handshake completes must still be
+ * encrypted and sent once the session is established. The API pool calls
+ * conn_send_request() while the connection is still CONNECTING; previously the
+ * TLS branch ran SSL_write() before the handshake (which accepts nothing and
+ * retains nothing), so the request was silently dropped and the loop then blocked
+ * forever in io_uring_wait_cqe. */
+static void test_tls_request_queued_before_handshake(void **state)
+{
+    fx_t *f = *state;
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(443);
+
+    tls_config_t cfg = {.host = "localhost", .verify = 0};
+    f->conn = conn_create(f->ops, &fake_net, &util_clock_ops_real, &cfg, on_done, f);
+    assert_non_null(f->conn);
+    assert_int_equal(conn_connect(f->conn, (struct sockaddr *)&addr, sizeof(addr), 0), 0);
+
+    /* Queue the request while still CONNECTING, exactly as slot_dispatch() does. */
+    const char *req = "GET /getMe HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    assert_int_equal(conn_send_request(f->conn, req, strlen(req)), 0);
+    assert_int_equal(conn_state(f->conn), CONN_CONNECTING);
+
+    /* Complete the connect; the handshake pump begins. */
+    assert_int_equal(fake_ring_submit_all(&f->ring), 2);
+    assert_int_equal(fake_ring_complete(&f->ring, fake_ring_find(&f->ring, OP_CONNECT), 0), 0);
+
+    /* Shuttle the handshake to completion. */
+    for (int i = 0; i < 50 && conn_state(f->conn) != CONN_HTTP_WRITE; ++i) {
+        (void)fake_ring_submit_all(&f->ring);
+        (void)drain_sends(f);
+        (void)SSL_do_handshake(f->server.ssl);
+        server_flush(&f->server);
+        op_t *recv_op = fake_ring_find(&f->ring, OP_RECV);
+        if (recv_op != NULL && f->server.out_len > 0) {
+            assert_int_equal(
+                fake_ring_fill_and_complete(&f->ring, recv_op, f->server.out, f->server.out_len),
+                0);
+            f->server.out_len = 0;
+        }
+    }
+    assert_int_equal(conn_state(f->conn), CONN_HTTP_WRITE);
+
+    /* The queued request must now be encrypted and a send submitted. */
+    (void)fake_ring_submit_all(&f->ring);
+    op_t *send_op = fake_ring_find(&f->ring, OP_SEND);
+    assert_non_null(send_op);
+    assert_true(drain_sends(f) >= 1);
+
+    /* The server must be able to read the request the client queued early. */
+    char plain[512];
+    int n = SSL_read(f->server.ssl, plain, sizeof(plain));
+    assert_int_equal(n, (int)strlen(req));
+    assert_memory_equal(plain, req, (size_t)n);
+
+    /* Answer and finish the roundtrip. */
+    const char *body = "{\"ok\":true,\"result\":{\"id\":1}}";
+    char resp[512];
+    int rlen = snprintf(resp, sizeof(resp), "HTTP/1.1 200 OK\r\nContent-Length: %zu\r\n\r\n%s",
+                        strlen(body), body);
+    assert_true(rlen > 0 && (size_t)rlen < sizeof(resp));
+    (void)SSL_write(f->server.ssl, resp, rlen);
+    f->server.out_len = 0;
+    server_flush(&f->server);
+    (void)fake_ring_submit_all(&f->ring);
+    op_t *recv_op = fake_ring_find(&f->ring, OP_RECV);
+    assert_non_null(recv_op);
+    assert_int_equal(
+        fake_ring_fill_and_complete(&f->ring, recv_op, f->server.out, f->server.out_len), 0);
+    assert_int_equal(f->cb_calls, 1);
+    assert_int_equal(f->cb_status, 0);
+    assert_int_equal(conn_state(f->conn), CONN_DONE);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_tls_handshake_reaches_http_write, setup, teardown),
         cmocka_unit_test_setup_teardown(test_tls_roundtrip_response, setup, teardown),
         cmocka_unit_test_setup_teardown(test_tls_keep_alive_reuse, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_tls_request_queued_before_handshake, setup, teardown),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

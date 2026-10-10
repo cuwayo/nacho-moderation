@@ -53,6 +53,15 @@ struct conn {
     size_t wlen; /**< Bytes in wbuf. */
     size_t woff; /**< Bytes already sent. */
 
+    /* TLS request plaintext awaiting encryption. SSL_write() cannot accept
+     * application data before the handshake completes, and OpenSSL does not
+     * retain bytes it refused, so a request queued during connect/handshake is
+     * held here until the session is established (then encrypted into wbuf).
+     * NULL/0 for plain HTTP and once the request has been encrypted. */
+    char *pending;      /**< TLS plaintext not yet encrypted. */
+    size_t pending_len; /**< Bytes in pending. */
+    size_t pending_off; /**< Bytes of pending already encrypted. */
+
     char rbuf[CONN_READ_CHUNK]; /**< Receive buffer. */
     http_resp_t resp;           /**< Response parser. */
     int have_request;           /**< 1 once a request has been queued. */
@@ -241,6 +250,72 @@ static int tls_handshake_pump(conn_t *c)
     }
 }
 
+/**
+ * @brief Encrypt any buffered request plaintext into the write buffer.
+ *
+ * Must only be called once the TLS handshake has completed. Each plaintext byte
+ * is handed to SSL_write() exactly once: @c pending_off tracks what has already
+ * been accepted, so a TLS_WANT_READ/WANT_WRITE step resumes without re-encrypting
+ * (re-encrypting would duplicate the request on the wire).
+ *
+ * @param[in,out] c Connection.
+ * @return 0 on success, negative errno on failure.
+ */
+static int tls_encrypt_pending(conn_t *c)
+{
+    while (c->pending != NULL && c->pending_off < c->pending_len) {
+        size_t accepted = 0;
+        tls_step_t st = tls_write_plain(c->tls, c->pending + c->pending_off,
+                                        c->pending_len - c->pending_off, &accepted);
+        c->pending_off += accepted;
+        if (st == TLS_ERROR) {
+            return -EPROTO;
+        }
+        int rc = tls_queue_output(c);
+        if (rc != 0) {
+            return rc;
+        }
+        if (accepted == 0) {
+            /* No progress: SSL needs more ciphertext (WANT_READ) or is blocked
+             * writing (WANT_WRITE); return so the caller can service the BIOs. */
+            break;
+        }
+    }
+    if (c->pending_off >= c->pending_len) {
+        free(c->pending);
+        c->pending = NULL;
+        c->pending_len = 0;
+        c->pending_off = 0;
+    }
+    return 0;
+}
+
+/**
+ * @brief Encrypt and flush a queued request once the handshake is established.
+ *
+ * Encrypts any buffered plaintext, then either sends the ciphertext or, if SSL
+ * still wants more peer data before accepting the request, arms another recv.
+ *
+ * @param[in,out] c Connection (TLS established, state CONN_HTTP_WRITE).
+ * @return 0 on success, negative errno on failure.
+ */
+static int conn_flush_request(conn_t *c)
+{
+    int rc = tls_encrypt_pending(c);
+    if (rc != 0) {
+        return rc;
+    }
+    if (c->wlen > c->woff) {
+        return submit_send(c);
+    }
+    if (c->pending != NULL) {
+        /* SSL wants more ciphertext from the peer before it will accept the
+         * request plaintext; keep reading until it makes progress. */
+        return submit_recv(c);
+    }
+    return 0;
+}
+
 /* --- Central pump ---------------------------------------------------------- */
 
 /**
@@ -260,10 +335,11 @@ static void conn_pump(conn_t *c)
         if (rc == 0) {
             return; /* waiting on the loop */
         }
-        /* Handshake complete: the connection is ready to write. */
+        /* Handshake complete: the connection is ready to write. Encrypt and
+         * flush any request that was queued while connecting/handshaking. */
         c->state = CONN_HTTP_WRITE;
         if (c->have_request) {
-            rc = submit_send(c);
+            rc = conn_flush_request(c);
             if (rc != 0) {
                 conn_fail(c, rc);
             }
@@ -369,6 +445,15 @@ static void on_send(struct op *op, int res)
         return;
     }
     if (c->state == CONN_HTTP_WRITE) {
+        /* If SSL accepted only part of the request before wanting to write, more
+         * plaintext remains; encrypt and flush it before reading the response. */
+        if (c->pending != NULL) {
+            int rc = conn_flush_request(c);
+            if (rc != 0) {
+                conn_fail(c, rc);
+            }
+            return;
+        }
         /* STATE: CONN_HTTP_WRITE -> CONN_HTTP_READ once the request is fully sent. */
         c->state = CONN_HTTP_READ;
         c->wlen = 0;
@@ -468,6 +553,33 @@ static void recv_peer_closed(conn_t *c)
 }
 
 /**
+ * @brief Feed received ciphertext to TLS and advance the handshake/request pump.
+ *
+ * @param[in,out] c   Connection (TLS enabled).
+ * @param[in]     res Number of ciphertext bytes received.
+ * @return 1 when the recv is fully handled (caller returns), 0 to continue with
+ *         the plaintext body feed, negative errno on failure.
+ */
+static int tls_on_recv_bytes(conn_t *c, int res)
+{
+    int rc = tls_feed_in(c->tls, c->rbuf, (size_t)res);
+    if (rc != 0) {
+        return rc;
+    }
+    if (c->state == CONN_TLS_HANDSHAKE) {
+        conn_pump(c);
+        return 1;
+    }
+    if (c->state == CONN_HTTP_WRITE && c->pending != NULL) {
+        /* SSL wanted more peer data before it would accept the request plaintext;
+         * retry encrypting/flushing now that more has arrived. */
+        rc = conn_flush_request(c);
+        return rc != 0 ? rc : 1;
+    }
+    return 0;
+}
+
+/**
  * @brief OP_RECV completion: feed the parser, finish, or keep reading.
  *
  * @param[in] op  Op context (owner is the connection).
@@ -492,13 +604,11 @@ static void on_recv(struct op *op, int res)
     /* A recv during the handshake feeds ciphertext to the BIO and re-runs the
      * handshake pump; during the body read it decrypts and parses plaintext. */
     if (c->tls != NULL) {
-        int rc = tls_feed_in(c->tls, c->rbuf, (size_t)res);
+        int rc = tls_on_recv_bytes(c, res);
         if (rc != 0) {
-            conn_fail(c, rc);
-            return;
-        }
-        if (c->state == CONN_TLS_HANDSHAKE) {
-            conn_pump(c);
+            if (rc < 0) {
+                conn_fail(c, rc);
+            }
             return;
         }
     } else if (c->state != CONN_HTTP_READ) {
@@ -598,6 +708,30 @@ int conn_connect(conn_t *c, const struct sockaddr *addr, socklen_t addr_len, uin
     return rc;
 }
 
+/**
+ * @brief Append request plaintext to the pending (not-yet-encrypted) buffer.
+ *
+ * @param[in,out] c   Connection.
+ * @param[in]     buf Plaintext bytes.
+ * @param[in]     len Count.
+ * @return 0 on success, -ENOMEM on failure, -EINVAL if a partial encryption is
+ *         already in progress (a second request before the first was sent).
+ */
+static int pending_append(conn_t *c, const char *buf, size_t len)
+{
+    if (c->pending_off != 0) {
+        return -EINVAL; /* first request is mid-encryption; one at a time */
+    }
+    char *nb = realloc(c->pending, c->pending_len + len);
+    if (nb == NULL) {
+        return -ENOMEM;
+    }
+    c->pending = nb;
+    memcpy(c->pending + c->pending_len, buf, len);
+    c->pending_len += len;
+    return 0;
+}
+
 int conn_send_request(conn_t *c, const char *buf, size_t len)
 {
     if (c == NULL || buf == NULL || len == 0) {
@@ -609,28 +743,30 @@ int conn_send_request(conn_t *c, const char *buf, size_t len)
     }
 
     if (c->tls != NULL) {
-        /* Encrypt into the write BIO, then queue the ciphertext. */
-        size_t accepted = 0;
-        tls_step_t st = tls_write_plain(c->tls, buf, len, &accepted);
-        if (st == TLS_ERROR) {
-            return -EPROTO;
-        }
-        int rc = tls_queue_output(c);
+        /* SSL_write() cannot accept application data before the handshake, and
+         * OpenSSL does not keep bytes it refused. Buffer the request until the
+         * handshake completes; conn_pump()/conn_flush_request() encrypts it then.
+         * If the handshake is already done, encrypt and send immediately. */
+        int rc = pending_append(c, buf, len);
         if (rc != 0) {
             return rc;
         }
-    } else {
-        int rc = wbuf_append(c, buf, len);
-        if (rc != 0) {
-            return rc;
+        c->have_request = 1;
+        if (c->state == CONN_HTTP_WRITE && tls_established(c->tls)) {
+            return conn_flush_request(c);
         }
+        return 0; /* flushed once the handshake completes */
+    }
+
+    int rc = wbuf_append(c, buf, len);
+    if (rc != 0) {
+        return rc;
     }
     c->have_request = 1;
-
     if (c->state == CONN_HTTP_WRITE) {
         return submit_send(c);
     }
-    return 0; /* will be flushed once the connection/handshake is ready */
+    return 0; /* will be flushed once the connection is ready */
 }
 
 const http_resp_t *conn_response(const conn_t *c)
@@ -660,6 +796,7 @@ void conn_destroy(conn_t *c)
     tls_session_free(c->tls);
     http_resp_free(&c->resp);
     free(c->wbuf);
+    free(c->pending);
     free(c);
 }
 
@@ -691,6 +828,10 @@ int conn_reuse_begin(conn_t *c)
     c->woff = 0;
     c->have_request = 0;
     c->leftover = 0;
+    free(c->pending); /* normally already freed once the request was encrypted */
+    c->pending = NULL;
+    c->pending_len = 0;
+    c->pending_off = 0;
     c->state = CONN_HTTP_WRITE;
     return 0;
 }
