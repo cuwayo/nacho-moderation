@@ -20,6 +20,9 @@ the mock server lands), and the mock server must implement every method listed.
 | `deleteMessages` | bulk | yes |
 | `pinChatMessage` | bulk | yes |
 | `unpinChatMessage` | bulk | yes |
+| `getChatMemberCount` | global | yes |
+| `answerCallbackQuery` | global | yes |
+| `editMessageText` | per-chat | no |
 
 (Additional methods are added to `src/api_methods.def` as commands are implemented.)
 

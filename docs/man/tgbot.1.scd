@@ -48,6 +48,19 @@ The available commands are listed below.
 | `/pin` | ROLE_ADMIN |  | Pin the replied-to message |
 | `/unpin` | ROLE_ADMIN |  | Unpin the last pinned message |
 | `/purge` | ROLE_ADMIN |  | Delete messages from the replied message to now |
+| `/warn` | ROLE_ADMIN | `[target] [reason]` | Warn a user; auto-act at the limit |
+| `/unwarn` | ROLE_ADMIN | `[target]` | Remove a user's newest warning |
+| `/warns` | ROLE_ANYONE | `[target]` | List your warnings, or a user's (admins) |
+| `/resetwarns` | ROLE_ADMIN | `[target]` | Clear all of a user's warnings |
+| `/setwarnlimit` | ROLE_ADMIN | `<n>` | Set how many warnings trigger the action |
+| `/setwarnaction` | ROLE_ADMIN | `ban|mute|kick` | Set the action taken at the warning limit |
+| `/setlog` | ROLE_OWNER | `<chat_id|off>` | Set or clear the moderation log channel |
+| `/reload` | ROLE_ADMIN |  | Refresh the cached administrator list |
+| `/settings` | ROLE_ADMIN |  | Open the inline settings panel |
+| `/setwelcome` | ROLE_ADMIN | `<text>` | Set the join welcome message |
+| `/welcome` | ROLE_ADMIN | `on|off` | Enable or disable the join welcome |
+| `/setrules` | ROLE_ADMIN | `<text>` | Set the chat rules |
+| `/rules` | ROLE_ANYONE |  | Show the chat rules |
 <!-- END GENERATED: commands-table -->
 
 # SIGNALS

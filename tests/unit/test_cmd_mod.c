@@ -330,6 +330,91 @@ static void test_ban_no_target_replies(void **state)
     finish(call, &f);
 }
 
+/* --- M5: settings-driven log post and explicit-chat requests ---------------- */
+
+/** @brief Fake API that records the chat_id of every request. */
+typedef struct {
+    int calls;
+    int64_t last_chat;
+    method_id_t last_method;
+    char last_body[2048];
+} chat_api_t;
+
+static int chat_request(void *ctx, method_id_t method, const char *body, size_t body_len,
+                        int64_t chat_id, uint64_t deadline_ms, tg_api_cb cb, void *user)
+{
+    (void)deadline_ms;
+    chat_api_t *f = ctx;
+    f->calls++;
+    f->last_chat = chat_id;
+    f->last_method = method;
+    size_t n = body_len < sizeof(f->last_body) - 1u ? body_len : sizeof(f->last_body) - 1u;
+    if (body != NULL) {
+        memcpy(f->last_body, body, n);
+    }
+    f->last_body[n] = '\0';
+    if (cb != NULL) {
+        api_result_t res = {0};
+        cb(&res, user);
+    }
+    return 0;
+}
+
+static void test_record_action_posts_to_log_channel(void **state)
+{
+    (void)state;
+    chat_api_t f = {0};
+    tg_api_ops_t api = {.request = chat_request, .ctx = &f};
+    int64_t now = 0;
+    wall_clock_ops_t wall = {.now_unix = fake_now_unix, .ctx = &now};
+
+    cmd_call_t *call = make_call(&api, NULL, &wall, "ban", 500, "");
+    /* Configure a log channel on the invocation's settings. */
+    chat_settings_t s = {0};
+    s.log_chat_id = -100999;
+    assert_int_equal(cmd_ctx_set_settings(cmd_call_ctx(call), &s), 0);
+
+    cmd_call_ctx(call)->record_action(cmd_call_ctx(call), "ban", 500, "spam", 0);
+    /* One sendMessage, and it went to the log channel (not the command chat). */
+    assert_int_equal(f.calls, 1);
+    assert_int_equal(f.last_method, METHOD_SEND_MESSAGE);
+    assert_int_equal(f.last_chat, -100999);
+    assert_non_null(strstr(f.last_body, "action=ban"));
+    assert_non_null(strstr(f.last_body, "Spammer"));
+    cmd_call_release(call); /* chat_request delivers synchronously; no drain needed */
+}
+
+static void test_record_action_without_log_makes_no_call(void **state)
+{
+    (void)state;
+    chat_api_t f = {0};
+    tg_api_ops_t api = {.request = chat_request, .ctx = &f};
+    int64_t now = 0;
+    wall_clock_ops_t wall = {.now_unix = fake_now_unix, .ctx = &now};
+
+    cmd_call_t *call = make_call(&api, NULL, &wall, "ban", 500, "");
+    /* No settings: record_action must not post a log message. */
+    cmd_call_ctx(call)->record_action(cmd_call_ctx(call), "ban", 500, "spam", 0);
+    assert_int_equal(f.calls, 0);
+    cmd_call_release(call);
+}
+
+static void test_request_chat_uses_explicit_chat(void **state)
+{
+    (void)state;
+    chat_api_t f = {0};
+    tg_api_ops_t api = {.request = chat_request, .ctx = &f};
+    int64_t now = 0;
+    wall_clock_ops_t wall = {.now_unix = fake_now_unix, .ctx = &now};
+
+    cmd_call_t *call = make_call(&api, NULL, &wall, "ban", 500, "");
+    assert_int_equal(
+        cmd_ctx_request_chat(cmd_call_ctx(call), METHOD_SEND_MESSAGE, "{}", 2, -555, NULL, NULL),
+        0);
+    assert_int_equal(f.last_chat, -555);
+    cmd_call_release(call);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -342,6 +427,9 @@ int main(void)
         cmocka_unit_test(test_kick_ban_failure_skips_unban),
         cmocka_unit_test(test_ban_rejects_owner_target),
         cmocka_unit_test(test_ban_no_target_replies),
+        cmocka_unit_test(test_record_action_posts_to_log_channel),
+        cmocka_unit_test(test_record_action_without_log_makes_no_call),
+        cmocka_unit_test(test_request_chat_uses_explicit_chat),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

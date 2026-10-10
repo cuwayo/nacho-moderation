@@ -32,6 +32,15 @@ M3 adds `tests/integration/test_integration_router.py`: the mock injects a scrip
 registered at startup, and that a non-command message produces no reply. It uses a
 real temporary SQLite file (`DB_PATH` in the test env).
 
+M4 adds `tests/integration/test_integration_moderation.py`: scripted `/ban`,
+`/kick`, `/purge` and `@username` scenarios assert the exact outbound calls.
+
+M5 adds `tests/integration/test_integration_m5.py`: `/warn` reaching the default
+limit triggers the configured action; a persisted welcome is delivered on join
+(`getChatMemberCount` + rendered `sendMessage`); and a `/settings` panel press is
+answered and re-rendered with `answerCallbackQuery` + `editMessageText`. Scenarios
+live in `tests/mock/scenarios/{warn_limit_action,welcome_join,welcome_join_part2,settings_panel}.json`.
+
 ## Fuzz tests
 
 libFuzzer harnesses under `tests/fuzz/`. CI runs each target for 60 s per PR and
@@ -71,7 +80,7 @@ the rest are added as their features land (SPEC-ADDENDUM-SSOT S10).
 | C4 | `docs/configuration.md` documents every config key | implemented |
 | C5 | `config/config.example.toml` matches `--dump-config-example` | implemented |
 | C9 | every `api_methods.def` method has a mock handler and a docs row | implemented |
-| C6–C18 | see SPEC-ADDENDUM-SSOT S7 | pending their features |
+| C6–C8, C10–C18 | see SPEC-ADDENDUM-SSOT S7 | pending their features |
 
 ```sh
 scripts/check_consistency.py --bin build/debug/tgbot

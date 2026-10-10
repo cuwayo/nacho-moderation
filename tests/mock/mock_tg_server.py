@@ -50,6 +50,9 @@ HANDLERS = [
     "deleteMessages",
     "pinChatMessage",
     "unpinChatMessage",
+    "getChatMemberCount",
+    "answerCallbackQuery",
+    "editMessageText",
 ]
 
 # A minimal administrator list returned by getChatAdministrators (the creator is
@@ -67,6 +70,7 @@ DEFAULT_ADMINS = [
         "can_restrict_members": True,
         "can_delete_messages": True,
         "can_pin_messages": True,
+        "can_change_info": True,
     },
     {
         "status": "administrator",
@@ -74,6 +78,7 @@ DEFAULT_ADMINS = [
         "can_restrict_members": True,
         "can_delete_messages": True,
         "can_pin_messages": True,
+        "can_change_info": True,
     },
 ]
 
@@ -176,6 +181,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "result": True})
         elif api_method in ("pinChatMessage", "unpinChatMessage"):
             self._send_json(200, {"ok": True, "result": True})
+        elif api_method == "getChatMemberCount":
+            self._send_json(200, {"ok": True, "result": 42})
+        elif api_method == "answerCallbackQuery":
+            self._send_json(200, {"ok": True, "result": True})
+        elif api_method == "editMessageText":
+            self._send_json(200, {"ok": True, "result": {"message_id": 1}})
         else:
             self._send_json(200, {"ok": False, "description": f"unknown method {api_method}"})
 

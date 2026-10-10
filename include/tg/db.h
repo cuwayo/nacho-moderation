@@ -39,17 +39,63 @@
 #define DB_ACTION_MAX 24
 /** @brief Maximum length of a stored moderation reason. */
 #define DB_REASON_MAX 256
+/** @brief Maximum length of a stored settings text (welcome/rules template). */
+#define DB_TEXT_MAX 4096
+/** @brief Maximum length of a stored warn action name ("ban"/"mute"/"kick"). */
+#define DB_WARN_ACTION_MAX 8
 /** @brief Maximum number of expired actions returned by one expiry sweep. */
 #define DB_MAX_EXPIRED 32u
+/** @brief Maximum number of warns returned by one warn-list query (one page). */
+#define DB_MAX_WARNS 16u
+
+/**
+ * @brief The per-chat moderation policy stored in the `chats` row (SPEC section 6).
+ *
+ * A snapshot of the columns the M5 commands read and write. `DB_JOB_SETTINGS_GET`
+ * fills this; when the chat has no row yet, the SPEC defaults are returned
+ * (@ref db_settings_defaults) so first-run commands behave predictably.
+ */
+typedef struct {
+    int64_t log_chat_id; /**< Moderation log chat id (0 = disabled). */
+    int warn_limit;      /**< Warnings before the auto-action (0 = never auto-act). */
+    int welcome_enabled; /**< 1 if the join welcome is enabled. */
+    char warn_action[DB_WARN_ACTION_MAX]; /**< "ban" | "mute" | "kick" ("" = default mute). */
+    char welcome_text[DB_TEXT_MAX];       /**< Welcome template with placeholders. */
+    char rules_text[DB_TEXT_MAX];         /**< Chat rules text ("" if unset). */
+} chat_settings_t;
+
+/** @brief One row of the `warns` table (SPEC section 6). */
+typedef struct {
+    int64_t id;                 /**< warns.id (rowid). */
+    int64_t admin_id;           /**< Admin who issued the warning. */
+    int64_t created_at;         /**< Unix seconds the warning was created. */
+    char reason[DB_REASON_MAX]; /**< Free-text reason (may be ""). */
+} db_warn_t;
+
+/* Settings fields addressed by db_job_t.settings_mask (DB_JOB_SETTINGS_SET).
+ * Exactly one bit is set per job: the value goes in db_job_t.value (numeric
+ * settings) or db_job_t.text (text settings). */
+#define DB_SET_WARN_LIMIT 0x01u   /**< db_job_t.value -> chats.warn_limit. */
+#define DB_SET_WARN_ACTION 0x02u  /**< db_job_t.text  -> chats.warn_action. */
+#define DB_SET_LOG_CHAT 0x04u     /**< db_job_t.value -> chats.log_chat_id. */
+#define DB_SET_WELCOME_ON 0x08u   /**< db_job_t.value -> chats.welcome_enabled. */
+#define DB_SET_WELCOME_TEXT 0x10u /**< db_job_t.text  -> chats.welcome_text. */
+#define DB_SET_RULES_TEXT 0x20u   /**< db_job_t.text  -> chats.rules_text. */
 
 /** @brief Which operation a @ref db_job_t performs. */
 typedef enum {
-    DB_JOB_UPSERT_USER = 0,      /**< Insert/update a row in `users`. */
-    DB_JOB_UPSERT_CHAT,          /**< Insert/update a row in `chats`. */
-    DB_JOB_INSERT_ACTION,        /**< Insert an expiring action into `actions`. */
-    DB_JOB_EXPIRE_ACTIONS,       /**< Fetch due action rows into @ref db_result_t.expired. */
-    DB_JOB_LIFT_ACTION,          /**< Mark one `actions` row as lifted. */
-    DB_JOB_FIND_USER_BY_USERNAME /**< Resolve a username to a user id (`i64`). */
+    DB_JOB_UPSERT_USER = 0,       /**< Insert/update a row in `users`. */
+    DB_JOB_UPSERT_CHAT,           /**< Insert/update a row in `chats`. */
+    DB_JOB_INSERT_ACTION,         /**< Insert an expiring action into `actions`. */
+    DB_JOB_EXPIRE_ACTIONS,        /**< Fetch due action rows into @ref db_result_t.expired. */
+    DB_JOB_LIFT_ACTION,           /**< Mark one `actions` row as lifted. */
+    DB_JOB_FIND_USER_BY_USERNAME, /**< Resolve a username to a user id (`i64`). */
+    DB_JOB_WARN_ADD,              /**< Insert a `warns` row; returns the new count in `i64`. */
+    DB_JOB_WARN_REMOVE_LAST,      /**< Delete the newest `warns` row for (chat, user). */
+    DB_JOB_WARN_LIST,             /**< Fetch a user's `warns` rows into @ref db_result_t.warns. */
+    DB_JOB_WARN_RESET,            /**< Delete every `warns` row for (chat, user). */
+    DB_JOB_SETTINGS_GET, /**< Read the `chats` policy row into @ref db_result_t.settings. */
+    DB_JOB_SETTINGS_SET  /**< Masked `UPDATE chats` for one settings field. */
 } db_job_kind_t;
 
 /**
@@ -58,6 +104,10 @@ typedef enum {
  * Fixed-size so it can be copied by value through the seam with no ownership
  * transfer: the caller may reuse or discard @p job immediately after submit.
  * Only the fields relevant to @ref kind are read.
+ *
+ * The struct is deliberately flat (no union): the seam, the worker queue and the
+ * tests all copy it by value, and at the target <=1000 updates/s the extra bytes
+ * are an insignificant memcpy. See @ref db_result_t for the matching rationale.
  */
 typedef struct {
     db_job_kind_t kind;             /**< Operation to perform. */
@@ -68,12 +118,15 @@ typedef struct {
     int64_t created_at;             /**< actions.created_at (Unix seconds). */
     int64_t expires_at;             /**< actions.expires_at (Unix seconds; <=0 = permanent). */
     int64_t now_unix;               /**< Cutoff for DB_JOB_EXPIRE_ACTIONS. */
+    int64_t value;                  /**< Numeric setting value (DB_JOB_SETTINGS_SET). */
+    unsigned settings_mask;         /**< Which chats column to write (DB_SET_* bit). */
     char username[DB_USERNAME_MAX]; /**< users.username, or the lookup key. */
     char first_name[DB_FIRST_NAME_MAX]; /**< users.first_name. */
     char title[DB_TITLE_MAX];           /**< chats.title. */
     char chat_type[DB_CHAT_TYPE_MAX];   /**< chats.type. */
     char action[DB_ACTION_MAX];         /**< actions.action ("ban"/"mute"). */
-    char reason[DB_REASON_MAX];         /**< actions.reason. */
+    char reason[DB_REASON_MAX];         /**< actions.reason / warns.reason. */
+    char text[DB_TEXT_MAX];             /**< Text setting value (DB_JOB_SETTINGS_SET). */
 } db_job_t;
 
 /** @brief One expired action returned by a @ref DB_JOB_EXPIRE_ACTIONS sweep. */
@@ -84,12 +137,21 @@ typedef struct {
     char action[DB_ACTION_MAX]; /**< Action name ("ban"/"mute"). */
 } db_expired_action_t;
 
-/** @brief Outcome of a DB job. */
+/**
+ * @brief Outcome of a DB job.
+ *
+ * Flat and fixed-size, like @ref db_job_t (fields are ordered scalars-first and
+ * arrays-last to avoid struct padding), and the whole value is copied by value
+ * once per completed job (the worker heap-allocates it, the loop copies it out).
+ */
 typedef struct {
     int status;             /**< 0 on success, negative @ref err_class_t otherwise. */
-    int64_t i64;            /**< Scalar result (user id for the username lookup, else 0). */
+    int64_t i64;            /**< Scalar result (user id / warn count, else 0). */
     unsigned expired_count; /**< Entries in @ref expired (DB_JOB_EXPIRE_ACTIONS only). */
+    unsigned warn_count;    /**< Entries in @ref warns (DB_JOB_WARN_LIST only). */
     db_expired_action_t expired[DB_MAX_EXPIRED]; /**< Due actions from an expiry sweep. */
+    db_warn_t warns[DB_MAX_WARNS];               /**< Rows from a warn-list query. */
+    chat_settings_t settings;                    /**< Policy row (DB_JOB_SETTINGS_GET only). */
 } db_result_t;
 
 /** @brief Job completion callback; runs on the loop thread. */
@@ -110,6 +172,18 @@ typedef struct {
     int (*submit)(void *ctx, const db_job_t *job, db_cb cb, void *user);
     void *ctx; /**< Implementation state. */
 } db_ops_t;
+
+/**
+ * @brief Fill @p out with the SPEC section 6 defaults for a chat's policy.
+ *
+ * Used when a chat has no `chats` row yet (`DB_JOB_SETTINGS_GET` returns these)
+ * and by the settings module's cache fallback, so first-run commands see
+ * `warn_limit=3`, `warn_action="mute"`, welcome disabled, no log channel.
+ *
+ * @param[out] out Settings to fill (zeroed first).
+ * @thread_safety Safe (writes only @p out).
+ */
+void db_settings_defaults(chat_settings_t *out);
 
 /** @brief Configuration for a DB worker. */
 typedef struct {

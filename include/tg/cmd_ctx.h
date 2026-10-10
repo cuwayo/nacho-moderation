@@ -32,7 +32,6 @@
 #include "tg/tg_api.h"
 #include "tg/tg_types.h"
 #include "tg/util.h"
-
 /** @brief A reference-counted command invocation (opaque; see cmd_ctx.c). */
 typedef struct cmd_call cmd_call_t;
 
@@ -50,12 +49,22 @@ struct cmd_ctx {
     const char *target_label; /**< Human-readable target ("Ada", "\@spammer", "123"); never NULL. */
     const char *args;         /**< Text after the command and target (never NULL). */
     const tg_message_t *msg;  /**< The originating message (never NULL). */
-    int is_group;             /**< 1 if the chat is a group/supergroup. */
-    role_t role;              /**< Caller's resolved role in the chat. */
-    int is_sudo;              /**< 1 if the caller is a configured sudo user. */
-    int bot_has_right;        /**< 1 if the bot holds @c cmd->bot_right in the chat. */
+    const char *callback_query_id; /**< Callback query id, or NULL for a command. */
+    int is_group;                  /**< 1 if the chat is a group/supergroup. */
+    role_t role;                   /**< Caller's resolved role in the chat. */
+    int is_sudo;                   /**< 1 if the caller is a configured sudo user. */
+    int bot_has_right;             /**< 1 if the bot holds @c cmd->bot_right in the chat. */
 
     const wall_clock_ops_t *wall; /**< Wall clock for `until_date` / `expires_at`. */
+
+    /**
+     * @brief The chat's policy snapshot, or NULL when unavailable (private chat).
+     *
+     * Points into the owning @ref cmd_call and is valid for the whole invocation.
+     * Handlers that need the warn limit/action, welcome text or log channel read
+     * it here; the router fills it before dispatch (SPEC section 5.2, 5.5).
+     */
+    const chat_settings_t *settings;
 
     /**
      * @brief Send a reply to the command's chat.
@@ -76,8 +85,9 @@ struct cmd_ctx {
     /**
      * @brief Record a moderation action (an `actions` row; SPEC section 5.5).
      *
-     * Writes the row through the DB seam, fire and forget. The log-channel post
-     * lands in M5.
+     * Writes the row through the DB seam, fire and forget, and, when a log
+     * channel is configured (@c settings->log_chat_id != 0), posts a moderation
+     * log message there (SPEC section 5.5).
      *
      * @param[in] ctx        The context.
      * @param[in] action     Action name ("ban", "mute", ...).
@@ -88,6 +98,49 @@ struct cmd_ctx {
     void (*record_action)(struct cmd_ctx *ctx, const char *action, int64_t target_id,
                           const char *reason, int64_t expires_at);
     void *record_action_ctx; /**< Opaque context for @ref record_action. */
+
+    /**
+     * @brief Submit a DB job that keeps the invocation alive until it completes.
+     *
+     * Retains the @ref cmd_call for the duration of the job and releases it after
+     * @p cb returns, so a handler may start an asynchronous DB chain and return
+     * (the same lifetime rule as @ref cmd_ctx_request). Fire and forget.
+     *
+     * @param[in] ctx  The context.
+     * @param[in] job  Job to submit (copied by the seam).
+     * @param[in] cb   Completion callback (may be NULL).
+     * @param[in] user Opaque pointer passed to @p cb.
+     *
+     * @return 0 if queued, negative errno on failure (the callback does not run then).
+     * @ownership @p user must stay valid until @p cb runs.
+     * @thread_safety Loop thread only.
+     */
+    int (*db_submit)(struct cmd_ctx *ctx, const db_job_t *job, db_cb cb, void *user);
+    void *db_submit_ctx; /**< Opaque context for @ref db_submit. */
+
+    /**
+     * @brief Drop the cached administrator list for the command's chat.
+     *
+     * Used by `/reload` (SPEC section 5.1). A no-op when no permission engine is
+     * wired.
+     *
+     * @param[in] ctx The context.
+     * @thread_safety Loop thread only.
+     */
+    void (*invalidate_admins)(struct cmd_ctx *ctx);
+    void *invalidate_admins_ctx; /**< Opaque context for @ref invalidate_admins. */
+
+    /**
+     * @brief Drop the cached settings for the command's chat.
+     *
+     * Called by the settings-writing handlers after a successful write so the
+     * next read refetches. A no-op when no settings service is wired.
+     *
+     * @param[in] ctx The context.
+     * @thread_safety Loop thread only.
+     */
+    void (*invalidate_settings)(struct cmd_ctx *ctx);
+    void *invalidate_settings_ctx; /**< Opaque context for @ref invalidate_settings. */
 
     cmd_call_t *call; /**< Owning reference-counted invocation (never NULL). */
 };
@@ -145,6 +198,36 @@ tg_message_t *cmd_call_message(cmd_call_t *call);
 int cmd_call_set_target_label(cmd_call_t *call, const char *label);
 
 /**
+ * @brief Wire the admin-cache invalidator used by @c ctx.invalidate_admins.
+ *
+ * The router owns the permission engine and calls this once per invocation so
+ * `/reload` can drop the cached administrator list (SPEC section 5.1).
+ *
+ * @param[in] call Invocation.
+ * @param[in] fn   Invalidator taking the implementation pointer and a chat id
+ *                 (may be NULL to disable).
+ * @param[in] impl Opaque implementation pointer (the permission engine).
+ * @thread_safety Loop thread only.
+ */
+void cmd_call_set_admin_invalidator(cmd_call_t *call, void (*fn)(void *impl, int64_t chat_id),
+                                    void *impl);
+
+/**
+ * @brief Wire the settings-cache invalidator used by @c ctx.invalidate_settings.
+ *
+ * The router owns the settings service and calls this once per invocation so the
+ * settings-writing handlers can drop the cached policy after a write.
+ *
+ * @param[in] call Invocation.
+ * @param[in] fn   Invalidator taking the implementation pointer and a chat id
+ *                 (may be NULL to disable).
+ * @param[in] impl Opaque implementation pointer (the settings service).
+ * @thread_safety Loop thread only.
+ */
+void cmd_call_set_settings_invalidator(cmd_call_t *call, void (*fn)(void *impl, int64_t chat_id),
+                                       void *impl);
+
+/**
  * @brief Add one reference to @p call.
  *
  * @param[in] call Invocation (may be NULL; a no-op then).
@@ -180,6 +263,63 @@ void cmd_call_release(cmd_call_t *call);
  */
 int cmd_ctx_request(struct cmd_ctx *ctx, method_id_t method, const char *body, size_t len,
                     tg_api_cb cb, void *user);
+
+/**
+ * @brief Like @ref cmd_ctx_request but rate-limited against an explicit chat.
+ *
+ * Used by the moderation log: the reply/action targets the originating chat, but
+ * the log message goes to `settings->log_chat_id`, which must be the bucket the
+ * rate limiter accounts for. Retains @p ctx exactly like @ref cmd_ctx_request.
+ *
+ * @param[in] ctx     Context.
+ * @param[in] method  API method identifier.
+ * @param[in] body    JSON request body (may be NULL when @p len is 0).
+ * @param[in] len     Length of @p body.
+ * @param[in] chat_id Chat used for per-chat rate limiting.
+ * @param[in] cb      Completion callback (may be NULL for fire-and-forget).
+ * @param[in] user    Opaque pointer passed to @p cb.
+ *
+ * @return 0 if queued, negative errno on failure (the callback does not run then).
+ * @ownership @p user must stay valid until @p cb runs; @p ctx is kept alive
+ *            automatically.
+ * @thread_safety Loop thread only.
+ */
+int cmd_ctx_request_chat(struct cmd_ctx *ctx, method_id_t method, const char *body, size_t len,
+                         int64_t chat_id, tg_api_cb cb, void *user);
+
+/**
+ * @brief Copy @p settings into the invocation so @c ctx->settings stays valid.
+ *
+ * The router calls this after the settings fetch completes; the value is copied
+ * (not pointed at the cache) so a later cache eviction cannot dangle the pointer.
+ *
+ * @param[in] ctx      Context.
+ * @param[in] settings Settings to copy (may be NULL to clear).
+ *
+ * @return 0 on success, -EINVAL on bad arguments.
+ * @thread_safety Loop thread only.
+ */
+int cmd_ctx_set_settings(struct cmd_ctx *ctx, const chat_settings_t *settings);
+
+/**
+ * @brief Build a `sendMessage` JSON body carrying @p html as an HTML message.
+ *
+ * The @p html text is JSON-escaped so markup such as an `{mention}` link can be
+ * embedded safely. Exposed for callers that build a `sendMessage` body outside a
+ * command invocation (the router's welcome delivery).
+ *
+ * @param[out] body     Destination buffer.
+ * @param[in]  cap      Capacity of @p body.
+ * @param[in]  chat_id  Target chat.
+ * @param[in]  html     HTML text.
+ * @param[in]  reply_to Message id to reply to (0 for none).
+ * @param[out] outlen   Receives the body length (excluding NUL).
+ *
+ * @return 0 on success, -ENOSPC if @p body is too small.
+ * @thread_safety Safe (no shared state).
+ */
+int cmd_ctx_build_send_message(char *body, size_t cap, int64_t chat_id, const char *html,
+                               int64_t reply_to, size_t *outlen);
 
 /**
  * @brief Send @p text as an HTML reply, escaping it first (SPEC section 9).

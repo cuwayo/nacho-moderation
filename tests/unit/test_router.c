@@ -141,6 +141,31 @@ static void test_resolve_bad_args(void **state)
     assert_int_equal(router_resolve_target(&inv, &msg, NULL), -EINVAL);
 }
 
+static void test_parse_ex_without_target_keeps_numeric_arg(void **state)
+{
+    (void)state;
+    cmd_invocation_t inv;
+    /* A no-target command must leave a numeric argument in args (M5: the flag-driven
+     * parse keeps `/setwarnlimit 5` intact instead of eating "5" as a target). */
+    assert_int_equal(router_parse_command_ex("/setwarnlimit 5", "MyBot", 0, &inv), 1);
+    assert_string_equal(inv.name, "setwarnlimit");
+    assert_false(inv.has_target);
+    assert_string_equal(inv.args, "5");
+
+    assert_int_equal(router_parse_command_ex("/setlog -100999", "MyBot", 0, &inv), 1);
+    assert_string_equal(inv.args, "-100999");
+
+    /* With a target requested, the same text yields a target token. */
+    assert_int_equal(router_parse_command_ex("/ban 123456 10m", "MyBot", 1, &inv), 1);
+    assert_true(inv.has_target);
+    assert_string_equal(inv.target, "123456");
+    assert_string_equal(inv.args, "10m");
+
+    /* router_parse_command keeps the target-taking behaviour. */
+    assert_int_equal(router_parse_command("/setwarnlimit 5", "MyBot", &inv), 1);
+    assert_true(inv.has_target);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -156,6 +181,7 @@ int main(void)
         cmocka_unit_test(test_resolve_no_target),
         cmocka_unit_test(test_resolve_username_unsupported),
         cmocka_unit_test(test_resolve_bad_args),
+        cmocka_unit_test(test_parse_ex_without_target_keeps_numeric_arg),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

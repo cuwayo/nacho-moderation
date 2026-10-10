@@ -23,6 +23,7 @@
 
 #include "tg/db.h"
 #include "tg/perms.h"
+#include "tg/settings.h"
 #include "tg/tg_api.h"
 #include "tg/tg_types.h"
 #include "tg/util.h"
@@ -46,6 +47,7 @@ typedef struct {
     const tg_api_ops_t *api;      /**< API seam (replies + admin fetch). */
     const db_ops_t *db;           /**< DB seam (user/chat upserts, target lookup). */
     perms_t *perms;               /**< Permission engine. */
+    settings_t *settings;         /**< Per-chat settings service (may be NULL). */
     const clock_ops_t *clock;     /**< Injected monotonic clock (unused for now). */
     const wall_clock_ops_t *wall; /**< Injected wall clock (expiry/until_date). */
     int64_t bot_id;               /**< The bot's own user id. */
@@ -72,6 +74,28 @@ typedef struct router router_t;
  * @thread_safety Safe (no shared state).
  */
 int router_parse_command(const char *text, const char *bot_username, cmd_invocation_t *out);
+
+/**
+ * @brief Parse a message text into a command invocation, optionally taking a target.
+ *
+ * Like @ref router_parse_command but @p want_target controls whether a leading
+ * `\@username` or numeric token is consumed into @c out->target. Commands that
+ * take no target (e.g. `/setwarnlimit 5`) pass 0 so a numeric argument is left in
+ * @c out->args rather than being mistaken for a target.
+ *
+ * @param[in]  text         Message text (must not be NULL).
+ * @param[in]  bot_username The bot's own username (no '@'), or NULL to accept any.
+ * @param[in]  want_target  1 to capture a leading target token, 0 to leave the
+ *                          whole tail in @c out->args.
+ * @param[out] out          Receives the parsed invocation.
+ *
+ * @return 1 if @p text is a command, 0 if it is not (plain text), -EINVAL on bad
+ *         arguments.
+ * @ownership @p out->args points into @p text; it is valid as long as @p text is.
+ * @thread_safety Safe (no shared state).
+ */
+int router_parse_command_ex(const char *text, const char *bot_username, int want_target,
+                            cmd_invocation_t *out);
 
 /**
  * @brief Resolve the target user for @p inv from @p msg.

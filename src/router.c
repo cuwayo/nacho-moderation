@@ -14,12 +14,16 @@
 #include <string.h>
 #include <strings.h>
 
+#include "api_methods.h"
 #include "commands.h"
 #include "tables.h"
+#include "tg/api_pool.h"
 #include "tg/cmd_ctx.h"
+#include "tg/cmd_settings.h"
 #include "tg/db.h"
 #include "tg/errors.h"
 #include "tg/perms.h"
+#include "tg/settings.h"
 #include "tg/tg_api.h"
 #include "tg/tg_types.h"
 #include "tg/util.h"
@@ -114,7 +118,8 @@ static const char *consume_bot_suffix(const char *rest, const char *bot_username
     return at + bot_len;
 }
 
-int router_parse_command(const char *text, const char *bot_username, cmd_invocation_t *out)
+int router_parse_command_ex(const char *text, const char *bot_username, int want_target,
+                            cmd_invocation_t *out)
 {
     if (text == NULL || out == NULL) {
         return -EINVAL;
@@ -147,8 +152,17 @@ int router_parse_command(const char *text, const char *bot_username, cmd_invocat
     }
     out->args = rest;
 
-    parse_target_token(&rest, out);
+    /* Only commands that take a target (CMDF_TARGET) consume a leading token; a
+     * numeric argument such as `/setwarnlimit 5` must stay in @c args. */
+    if (want_target) {
+        parse_target_token(&rest, out);
+    }
     return 1;
+}
+
+int router_parse_command(const char *text, const char *bot_username, cmd_invocation_t *out)
+{
+    return router_parse_command_ex(text, bot_username, 1, out);
 }
 
 int router_resolve_target(const cmd_invocation_t *inv, const tg_message_t *msg, int64_t *out)
@@ -257,6 +271,11 @@ static void seed_admins(router_t *r, const perms_admins_t *admins)
 
 /* --- Dispatch -------------------------------------------------------------- */
 
+/* --- Dispatch -------------------------------------------------------------- */
+
+/** @brief Deliver the join welcome if the chat has it enabled (defined below). */
+static void maybe_welcome(router_t *r, const tg_chat_t *chat, const tg_user_t *user);
+
 /** @brief Context for the asynchronous dispatch chain. */
 typedef struct dispatch {
     router_t *router;     /**< Router. */
@@ -264,6 +283,28 @@ typedef struct dispatch {
     cmd_invocation_t inv; /**< Parsed invocation. */
     int is_group;         /**< 1 if the chat is a group/supergroup. */
 } dispatch_t;
+
+/**
+ * @brief Adapter for @ref cmd_call_set_admin_invalidator (drops the perms cache).
+ *
+ * @param[in] impl    The @ref perms_t.
+ * @param[in] chat_id Chat whose cached admin list is dropped.
+ */
+static void perms_invalidate_adapter(void *impl, int64_t chat_id)
+{
+    perms_invalidate(impl, chat_id);
+}
+
+/**
+ * @brief Adapter for @ref cmd_call_set_settings_invalidator (drops the settings cache).
+ *
+ * @param[in] impl    The @ref settings_t.
+ * @param[in] chat_id Chat whose cached settings are dropped.
+ */
+static void settings_invalidate_adapter(void *impl, int64_t chat_id)
+{
+    settings_invalidate(impl, chat_id);
+}
 
 /**
  * @brief Fill the invocation's role-derived fields and run the command handler.
@@ -477,6 +518,52 @@ static void dispatch_after_admins(dispatch_t *d, const perms_admins_t *admins)
 }
 
 /**
+ * @brief Settings-lookup completion: store the policy and continue to the admins.
+ *
+ * @param[in] settings Policy (NULL on failure).
+ * @param[in] status   Lookup status.
+ * @param[in] user     The @ref dispatch_t.
+ */
+static void on_settings(const chat_settings_t *settings, int status, void *user)
+{
+    dispatch_t *d = user;
+    struct cmd_ctx *ctx = cmd_call_ctx(d->call);
+    if (status != 0) {
+        util_log(LOG_WARN, "router", "settings lookup failed: %d", status);
+        (void)cmd_ctx_reply_plain(ctx, ctx->msg != NULL ? ctx->msg->message_id : 0,
+                                  "I could not load this chat's settings; please try again.");
+        finish_dispatch(d);
+        return;
+    }
+    (void)cmd_ctx_set_settings(ctx, settings);
+    dispatch_with_admins(d);
+}
+
+/**
+ * @brief Load the chat's settings, then continue the dispatch chain.
+ *
+ * Settings are fetched before the administrator list because the admin list
+ * pointer is only valid for the duration of its callback, whereas settings are
+ * copied into the invocation. Private chats have no per-chat settings, so they
+ * continue straight to @ref dispatch_with_admins.
+ *
+ * @param[in] d Dispatch context.
+ */
+static void dispatch_with_settings(dispatch_t *d)
+{
+    struct cmd_ctx *ctx = cmd_call_ctx(d->call);
+    if (d->router->cfg.settings == NULL || !d->is_group) {
+        dispatch_with_admins(d);
+        return;
+    }
+    if (settings_get(d->router->cfg.settings, ctx->chat_id, on_settings, d) != 0) {
+        (void)cmd_ctx_reply_plain(ctx, ctx->msg != NULL ? ctx->msg->message_id : 0,
+                                  "I could not load this chat's settings; please try again.");
+        finish_dispatch(d);
+    }
+}
+
+/**
  * @brief Admin-fetch completion: seed and dispatch, or report the failure.
  *
  * @param[in] admins Administrator list (NULL on failure).
@@ -557,13 +644,31 @@ static int handle_message(router_t *r, const tg_update_t *upd)
     /* Upsert the sender/chat for every non-service message. */
     upsert_message(r, msg);
 
+    /* Basic-group joins arrive as a service message with new_chat_members (SPEC
+     * section 5.4); supergroup joins arrive as chat_member. Welcome each joiner. */
+    for (unsigned i = 0; i < msg->new_member_count; ++i) {
+        maybe_welcome(r, &msg->chat, &msg->new_members[i]);
+    }
+
     if (msg->is_service || msg->from.is_bot || msg->text[0] == '\0') {
         return 0; /* service messages, bots and non-text are not commands */
     }
 
+    /* Peek at the command name to learn whether it takes a target, so a numeric
+     * argument (`/setwarnlimit 5`) is not consumed as a target token. */
+    cmd_invocation_t peek;
+    int is_cmd = router_parse_command_ex(msg->text, r->cfg.bot_username, 0, &peek);
+    if (is_cmd <= 0 || peek.addressed_to_other_bot) {
+        return 0;
+    }
+    const cmd_desc_t *cmd = cmd_lookup(peek.name);
+    if (cmd == NULL) {
+        return 0; /* unknown command: ignore silently */
+    }
+    int want_target = (cmd->flags & CMDF_TARGET) != 0;
+
     cmd_invocation_t inv;
-    int is_cmd = router_parse_command(msg->text, r->cfg.bot_username, &inv);
-    if (is_cmd <= 0 || inv.addressed_to_other_bot) {
+    if (router_parse_command_ex(msg->text, r->cfg.bot_username, want_target, &inv) <= 0) {
         return 0;
     }
 
@@ -571,6 +676,8 @@ static int handle_message(router_t *r, const tg_update_t *upd)
     if (call == NULL) {
         return -ENOMEM;
     }
+    cmd_call_set_admin_invalidator(call, perms_invalidate_adapter, r->cfg.perms);
+    cmd_call_set_settings_invalidator(call, settings_invalidate_adapter, r->cfg.settings);
     tg_message_t *copy = cmd_call_message(call);
     *copy = *msg;
 
@@ -590,9 +697,9 @@ static int handle_message(router_t *r, const tg_update_t *upd)
     d->is_group =
         strcmp(copy->chat.type, "group") == 0 || strcmp(copy->chat.type, "supergroup") == 0;
 
-    /* Fill the identity fields up front: the admin fetch below reads chat_id, and
-     * every reply/record path needs chat_id/user_id/bot_id regardless of how the
-     * dispatch chain resolves the caller's role. */
+    /* Fill the identity fields up front: the settings/admin fetch below reads
+     * chat_id, and every reply/record path needs chat_id/user_id/bot_id regardless
+     * of how the dispatch chain resolves the caller's role. */
     struct cmd_ctx *ctx = cmd_call_ctx(call);
     ctx->chat_id = copy->chat.id;
     ctx->user_id = copy->from.id;
@@ -601,10 +708,393 @@ static int handle_message(router_t *r, const tg_update_t *upd)
     ctx->args = d->inv.args;
     ctx->wall = r->cfg.wall;
 
-    /* Resolve the target and dispatch. Target resolution (including the \@username
-     * DB lookup) runs after the admin fetch so the users cache is seeded first. */
-    dispatch_with_admins(d);
+    /* Load settings, then admins, then resolve the target and dispatch. */
+    dispatch_with_settings(d);
     return 0;
+}
+
+/* --- Inline-keyboard callbacks --------------------------------------------- */
+
+/** @brief Context for the settings-panel callback chain. */
+typedef struct {
+    router_t *router;     /**< Router. */
+    cmd_call_t *call;     /**< Reference-counted invocation. */
+    int64_t chat_id;      /**< Chat the panel lives in. */
+    int64_t owner_id;     /**< User the panel belongs to (callback ownership). */
+    int64_t message_id;   /**< Panel message id (for editMessageText). */
+    char callback_id[64]; /**< Query id (for answerCallbackQuery). */
+    int new_enabled;      /**< Value to write for the welcome toggle. */
+} cb_ctx_t;
+
+/**
+ * @brief No-op completion for fire-and-forget API calls in the router.
+ *
+ * @param[in] res API result (ignored).
+ * @param[in] user Unused.
+ */
+static void on_ignore_api(const api_result_t *res, void *user)
+{
+    (void)res;
+    (void)user;
+}
+
+/**
+ * @brief Answer a callback query so the client stops showing a spinner.
+ *
+ * @param[in] r    Router.
+ * @param[in] cb   Callback context.
+ * @param[in] text Toast text (may be NULL for none).
+ */
+static void answer_callback(router_t *r, const cb_ctx_t *cb, const char *text)
+{
+    char body[256];
+    int n;
+    if (text != NULL) {
+        n = snprintf(body, sizeof(body), "{\"callback_query_id\":\"%s\",\"text\":\"%s\"}",
+                     cb->callback_id, text);
+    } else {
+        n = snprintf(body, sizeof(body), "{\"callback_query_id\":\"%s\"}", cb->callback_id);
+    }
+    if (n > 0 && (size_t)n < sizeof(body)) {
+        (void)r->cfg.api->request(r->cfg.api->ctx, METHOD_ANSWER_CALLBACK_QUERY, body, (size_t)n,
+                                  cb->chat_id, 0, on_ignore_api, NULL);
+    }
+}
+
+/**
+ * @brief Build the inline-keyboard `reply_markup` for the settings panel.
+ *
+ * @param[out] out     Destination buffer.
+ * @param[in]  cap     Capacity of @p out.
+ * @param[in]  chat_id Chat id embedded in the callback data.
+ * @param[in]  user_id Owner of the panel (the callback is rejected for others).
+ * @param[in]  enabled 1 if the welcome is currently enabled.
+ *
+ * @return 0 on success, -ENOSPC if @p out is too small.
+ */
+static int build_panel_markup(char *out, size_t cap, int64_t chat_id, int64_t user_id, int enabled)
+{
+    const char *label = enabled != 0 ? "Welcome: ON" : "Welcome: OFF";
+    int n = snprintf(out, cap,
+                     "\"reply_markup\":{\"inline_keyboard\":[[{\"text\":\"%s\","
+                     "\"callback_data\":\"set:%lld:%lld:welcome\"}]]}",
+                     label, (long long)chat_id, (long long)user_id);
+    return (n < 0 || (size_t)n >= cap) ? -ENOSPC : 0;
+}
+
+/**
+ * @brief Edit the settings-panel message to reflect the new toggle state.
+ *
+ * @param[in] cb The callback context (carries the new state).
+ */
+static void edit_panel(cb_ctx_t *cb)
+{
+    char markup[256];
+    if (build_panel_markup(markup, sizeof(markup), cb->chat_id, cb->owner_id, cb->new_enabled) !=
+        0) {
+        return;
+    }
+    char body[512];
+    int n = snprintf(body, sizeof(body),
+                     "{\"chat_id\":%lld,\"message_id\":%lld,\"text\":\"Chat settings\","
+                     "\"parse_mode\":\"HTML\",%s}",
+                     (long long)cb->chat_id, (long long)cb->message_id, markup);
+    if (n > 0 && (size_t)n < sizeof(body)) {
+        (void)cmd_ctx_request(cmd_call_ctx(cb->call), METHOD_EDIT_MESSAGE_TEXT, body, (size_t)n,
+                              NULL, NULL);
+    }
+}
+
+/**
+ * @brief DB completion for the panel toggle: edit the panel and release the call.
+ *
+ * @param[in] res DB result.
+ * @param[in] user The @ref cb_ctx_t.
+ */
+static void on_panel_write(const db_result_t *res, void *user)
+{
+    cb_ctx_t *cb = user;
+    if (res->status == 0) {
+        edit_panel(cb);
+    }
+    cmd_call_release(cb->call);
+    free(cb);
+}
+
+/**
+ * @brief Settings-fetch completion for a panel press: toggle and persist.
+ *
+ * @param[in] settings Current policy.
+ * @param[in] status   Lookup status.
+ * @param[in] user     The @ref cb_ctx_t.
+ */
+static void on_panel_settings(const chat_settings_t *settings, int status, void *user)
+{
+    cb_ctx_t *cb = user;
+    struct cmd_ctx *ctx = cmd_call_ctx(cb->call);
+    if (status != 0 || settings == NULL) {
+        answer_callback(cb->router, cb, "Could not read settings.");
+        cmd_call_release(cb->call);
+        free(cb);
+        return;
+    }
+    cb->new_enabled = settings->welcome_enabled != 0 ? 0 : 1;
+    answer_callback(cb->router, cb,
+                    cb->new_enabled != 0 ? "Welcome enabled." : "Welcome disabled.");
+    if (ctx->db_submit == NULL) {
+        cmd_call_release(cb->call);
+        free(cb);
+        return;
+    }
+    db_job_t job = {.kind = DB_JOB_SETTINGS_SET,
+                    .id = cb->chat_id,
+                    .settings_mask = DB_SET_WELCOME_ON,
+                    .value = cb->new_enabled};
+    if (ctx->db_submit(ctx, &job, on_panel_write, cb) != 0) {
+        cmd_call_release(cb->call);
+        free(cb);
+        return;
+    }
+    if (ctx->invalidate_settings != NULL) {
+        ctx->invalidate_settings(ctx);
+    }
+}
+
+/**
+ * @brief Admin-fetch completion for a panel press: check the right, then toggle.
+ *
+ * @param[in] admins Administrator list (NULL on failure).
+ * @param[in] status Fetch status.
+ * @param[in] user   The @ref cb_ctx_t.
+ */
+static void on_panel_admins(const perms_admins_t *admins, int status, void *user)
+{
+    cb_ctx_t *cb = user;
+    const struct cmd_ctx *ctx = cmd_call_ctx(cb->call);
+    const cmd_desc_t *cmd = cmd_lookup("settings");
+    perms_subject_t subject;
+    (void)perms_subject_from_admins(cb->router->cfg.perms, admins, ctx->user_id, &subject);
+    int bot_has = perms_bot_has_right(admins, cb->router->cfg.bot_id, cmd->bot_right);
+    if (status != 0 || perms_check(&subject, cmd, bot_has) != 0) {
+        answer_callback(cb->router, cb, "You are not allowed to change settings.");
+        cmd_call_release(cb->call);
+        free(cb);
+        return;
+    }
+    if (settings_get(cb->router->cfg.settings, cb->chat_id, on_panel_settings, cb) != 0) {
+        cmd_call_release(cb->call);
+        free(cb);
+    }
+}
+
+/**
+ * @brief Handle a settings-panel button press (SPEC sections 5.2, 10).
+ *
+ * Enforces the callback-ownership rule before doing anything: the presser's user
+ * id must equal the id baked into the payload. Then it resolves the presser's
+ * permissions and toggles the welcome.
+ *
+ * @param[in] r   Router.
+ * @param[in] upd Callback-query update.
+ *
+ * @return 0 if handled, negative errno on a fatal error.
+ */
+static int handle_callback(router_t *r, const tg_update_t *upd)
+{
+    int64_t chat = 0;
+    int64_t owner = 0;
+    const char *key = NULL;
+    if (cmd_settings_parse_callback(upd->callback_data, &chat, &owner, &key) != 0) {
+        return 0; /* not a settings callback (e.g. a captcha button, M6) */
+    }
+    if (!upd->callback_has_message) {
+        return 0; /* nothing to edit */
+    }
+
+    cmd_call_t *call = cmd_call_create(r->cfg.api, r->cfg.db, r->cfg.wall);
+    if (call == NULL) {
+        return -ENOMEM;
+    }
+    cmd_call_set_admin_invalidator(call, perms_invalidate_adapter, r->cfg.perms);
+    cmd_call_set_settings_invalidator(call, settings_invalidate_adapter, r->cfg.settings);
+
+    /* Synthesize the message the reply helpers expect (chat + message id only). */
+    tg_message_t *msg = cmd_call_message(call);
+    msg->chat.id = upd->callback_chat.id;
+    (void)snprintf(msg->chat.type, sizeof(msg->chat.type), "%s", upd->callback_chat.type);
+    msg->message_id = upd->callback_message_id;
+
+    struct cmd_ctx *ctx = cmd_call_ctx(call);
+    ctx->chat_id = upd->callback_chat.id;
+    ctx->user_id = upd->callback_from.id;
+    ctx->bot_id = r->cfg.bot_id;
+    ctx->callback_query_id = upd->callback_id;
+    ctx->is_group = strcmp(upd->callback_chat.type, "group") == 0 ||
+                    strcmp(upd->callback_chat.type, "supergroup") == 0;
+    ctx->wall = r->cfg.wall;
+
+    cb_ctx_t *cb = calloc(1, sizeof(*cb));
+    if (cb == NULL) {
+        cmd_call_release(call);
+        return -ENOMEM;
+    }
+    cb->router = r;
+    cb->call = call;
+    cb->chat_id = upd->callback_chat.id;
+    cb->owner_id = owner;
+    cb->message_id = upd->callback_message_id;
+    (void)snprintf(cb->callback_id, sizeof(cb->callback_id), "%s", upd->callback_id);
+
+    /* Ownership (SPEC section 10): only the user the panel was opened for may use
+     * its buttons, so a forwarded message cannot drive someone else's panel. */
+    if (upd->callback_from.id != owner) {
+        answer_callback(r, cb, "This panel is not yours.");
+        cmd_call_release(call);
+        free(cb);
+        return 0;
+    }
+    if (strcmp(key, "welcome") != 0) {
+        answer_callback(r, cb, "Unknown setting.");
+        cmd_call_release(call);
+        free(cb);
+        return 0;
+    }
+
+    if (r->cfg.perms == NULL || !ctx->is_group) {
+        /* Without a permission engine we cannot verify the right; refuse safely. */
+        answer_callback(r, cb, "You are not allowed to change settings.");
+        cmd_call_release(call);
+        free(cb);
+        return 0;
+    }
+    if (perms_admins_get(r->cfg.perms, ctx->chat_id, on_panel_admins, cb) != 0) {
+        answer_callback(r, cb, "Could not verify permissions.");
+        cmd_call_release(call);
+        free(cb);
+    }
+    return 0;
+}
+
+/* --- Join -> welcome ------------------------------------------------------- */
+
+/**
+ * @brief Render and send the join welcome for @p user in @p chat.
+ *
+ * Fetches the member count for `{count}`, renders the template and sends it with
+ * `sendMessage`. Factored so M6's captcha flow can call it after a member passes
+ * the challenge (SPEC section 5.4).
+ *
+ * @param[in] r       Router.
+ * @param[in] chat    Chat the user joined.
+ * @param[in] user    Joining user.
+ * @param[in] tmpl    Welcome template (already known enabled and non-empty).
+ */
+static void send_welcome(router_t *r, const tg_chat_t *chat, const tg_user_t *user,
+                         const char *tmpl);
+
+/** @brief getChatMemberCount completion for the welcome `{count}`. */
+typedef struct {
+    router_t *router;       /**< Router. */
+    tg_chat_t chat;         /**< Chat joined. */
+    tg_user_t user;         /**< Joining user. */
+    char tmpl[DB_TEXT_MAX]; /**< Welcome template. */
+} welcome_ctx_t;
+
+/**
+ * @brief getChatMemberCount completion: render and send the welcome.
+ *
+ * @param[in] res API result (the count is in the body, parsed here).
+ * @param[in] user The @ref welcome_ctx_t.
+ */
+static void on_member_count(const api_result_t *res, void *user)
+{
+    welcome_ctx_t *w = user;
+    int count = 0;
+    if (res->status == 0 && res->body != NULL) {
+        /* The result is a bare integer: {"ok":true,"result":42}. */
+        const char *p = strstr(res->body, "\"result\":");
+        if (p != NULL) {
+            char *end = NULL;
+            long v = strtol(p + 9, &end, 10);
+            if (end != p + 9 && v > 0) {
+                count = (int)v;
+            }
+        }
+    }
+    char html[DB_TEXT_MAX * 2u];
+    if (cmd_render_welcome(w->tmpl, &w->user, w->chat.title, count, html, sizeof(html)) == 0) {
+        char body[DB_TEXT_MAX * 3u];
+        size_t len = 0;
+        if (cmd_ctx_build_send_message(body, sizeof(body), w->chat.id, html, 0, &len) == 0) {
+            (void)w->router->cfg.api->request(w->router->cfg.api->ctx, METHOD_SEND_MESSAGE, body,
+                                              len, w->chat.id, 0, on_ignore_api, NULL);
+        }
+    }
+    free(w);
+}
+
+static void send_welcome(router_t *r, const tg_chat_t *chat, const tg_user_t *user,
+                         const char *tmpl)
+{
+    if (r->cfg.api == NULL || r->cfg.api->request == NULL) {
+        return;
+    }
+    welcome_ctx_t *w = calloc(1, sizeof(*w));
+    if (w == NULL) {
+        return;
+    }
+    w->router = r;
+    w->chat = *chat;
+    w->user = *user;
+    (void)snprintf(w->tmpl, sizeof(w->tmpl), "%s", tmpl);
+    char body[64];
+    (void)snprintf(body, sizeof(body), "{\"chat_id\":%lld}", (long long)chat->id);
+    if (r->cfg.api->request(r->cfg.api->ctx, METHOD_GET_CHAT_MEMBER_COUNT, body, strlen(body),
+                            chat->id, 0, on_member_count, w) != 0) {
+        free(w);
+    }
+}
+
+/**
+ * @brief Welcome-fetch completion: deliver the welcome if enabled.
+ *
+ * @param[in] settings Chat policy.
+ * @param[in] status   Lookup status.
+ * @param[in] user     The @ref welcome_ctx_t.
+ */
+static void on_welcome_settings(const chat_settings_t *settings, int status, void *user)
+{
+    welcome_ctx_t *w = user;
+    if (status == 0 && settings != NULL && settings->welcome_enabled != 0 &&
+        settings->welcome_text[0] != '\0') {
+        (void)snprintf(w->tmpl, sizeof(w->tmpl), "%s", settings->welcome_text);
+        send_welcome(w->router, &w->chat, &w->user, w->tmpl);
+    }
+    free(w);
+}
+
+/**
+ * @brief Deliver the welcome for a join, if the chat has it enabled.
+ *
+ * @param[in] r    Router.
+ * @param[in] chat Chat joined.
+ * @param[in] user Joining user (bots are ignored).
+ */
+static void maybe_welcome(router_t *r, const tg_chat_t *chat, const tg_user_t *user)
+{
+    if (user->is_bot || user->id == 0 || r->cfg.settings == NULL) {
+        return;
+    }
+    welcome_ctx_t *w = calloc(1, sizeof(*w));
+    if (w == NULL) {
+        return;
+    }
+    w->router = r;
+    w->chat = *chat;
+    w->user = *user;
+    if (settings_get(r->cfg.settings, chat->id, on_welcome_settings, w) != 0) {
+        free(w);
+    }
 }
 
 /* --- Public API ------------------------------------------------------------ */
@@ -622,6 +1112,27 @@ router_t *router_create(const router_config_t *cfg)
     return r;
 }
 
+/**
+ * @brief Report whether a membership transition is a join (SPEC section 5.4).
+ *
+ * Telegram sends `chat_member` only for supergroups; a transition into `member`
+ * from a non-member status is a join. Basic-group joins arrive as
+ * `message.new_chat_members` instead, so the two paths never double-fire.
+ *
+ * @param[in] old_status Previous ChatMember status ("" if unknown).
+ * @param[in] new_status New ChatMember status.
+ *
+ * @return 1 if this is a join, else 0.
+ */
+static int is_join_transition(const char *old_status, const char *new_status)
+{
+    if (strcmp(new_status, "member") != 0) {
+        return 0;
+    }
+    return strcmp(old_status, "member") != 0 && strcmp(old_status, "administrator") != 0 &&
+           strcmp(old_status, "creator") != 0;
+}
+
 int router_handle(router_t *r, const tg_update_t *upd)
 {
     if (r == NULL || upd == NULL) {
@@ -637,8 +1148,14 @@ int router_handle(router_t *r, const tg_update_t *upd)
         if (r->cfg.perms != NULL) {
             perms_invalidate(r->cfg.perms, upd->member_chat.id);
         }
+        /* A join in a supergroup arrives here; welcome the new member. */
+        if (upd->kind == TG_UPD_CHAT_MEMBER &&
+            is_join_transition(upd->old_status, upd->new_status)) {
+            maybe_welcome(r, &upd->member_chat, &upd->member_user);
+        }
         return 0;
-    case TG_UPD_CALLBACK_QUERY: /* Captcha callbacks arrive in M6. */
+    case TG_UPD_CALLBACK_QUERY:
+        return handle_callback(r, upd);
     case TG_UPD_UNKNOWN:
     default:
         return 0;

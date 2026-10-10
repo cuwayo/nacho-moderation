@@ -73,9 +73,12 @@ typedef struct {
     tg_message_t message; /**< Parsed message (message/edited_message). */
 
     /* TG_UPD_CALLBACK_QUERY */
-    char callback_id[64];    /**< Opaque callback query id (for answerCallbackQuery). */
-    tg_user_t callback_from; /**< User who pressed the button. */
-    char callback_data[65];  /**< Button payload (Telegram caps it at 64 bytes). */
+    char callback_id[64];        /**< Opaque callback query id (for answerCallbackQuery). */
+    tg_user_t callback_from;     /**< User who pressed the button. */
+    char callback_data[65];      /**< Button payload (Telegram caps it at 64 bytes). */
+    int callback_has_message;    /**< 1 if the callback carries a message. */
+    int64_t callback_message_id; /**< Message carrying the keyboard (0 if none). */
+    tg_chat_t callback_chat;     /**< Chat of the callback's message (valid if has_message). */
 
     /* TG_UPD_CHAT_MEMBER / TG_UPD_MY_CHAT_MEMBER */
     tg_chat_t member_chat; /**< Chat whose membership changed. */

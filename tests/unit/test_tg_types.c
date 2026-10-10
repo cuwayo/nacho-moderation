@@ -95,6 +95,29 @@ static void test_callback_query(void **state)
     assert_string_equal(u.callback_id, "cb-1");
     assert_int_equal(u.callback_from.id, 77);
     assert_string_equal(u.callback_data, "cap:-5:77:abcd");
+    /* No message member: the panel fields stay zeroed. */
+    assert_int_equal(u.callback_has_message, 0);
+    assert_int_equal(u.callback_message_id, 0);
+}
+
+static void test_callback_query_with_message(void **state)
+{
+    (void)state;
+    /* M5: a settings-panel press carries the panel message so the bot can edit it. */
+    const char *json =
+        "{\"update_id\":5,\"callback_query\":{\"id\":\"cb-2\","
+        "\"from\":{\"id\":200,\"first_name\":\"Admin\"},\"data\":\"set:-100:200:welcome\","
+        "\"message\":{\"message_id\":55,\"chat\":{\"id\":-1001234567890,"
+        "\"type\":\"supergroup\",\"title\":\"Testers\"}}}}";
+    tg_update_t u;
+    assert_int_equal(tg_update_parse(json, strlen(json), &u), 0);
+    assert_int_equal(u.kind, TG_UPD_CALLBACK_QUERY);
+    assert_string_equal(u.callback_data, "set:-100:200:welcome");
+    assert_int_equal(u.callback_has_message, 1);
+    assert_int_equal(u.callback_message_id, 55);
+    assert_int_equal(u.callback_chat.id, -1001234567890);
+    assert_string_equal(u.callback_chat.type, "supergroup");
+    assert_string_equal(u.callback_chat.title, "Testers");
 }
 
 static void test_chat_member_statuses(void **state)
@@ -239,6 +262,7 @@ int main(void)
         cmocka_unit_test(test_reply_captures_target),
         cmocka_unit_test(test_service_message_has_no_sender),
         cmocka_unit_test(test_callback_query),
+        cmocka_unit_test(test_callback_query_with_message),
         cmocka_unit_test(test_chat_member_statuses),
         cmocka_unit_test(test_my_chat_member),
         cmocka_unit_test(test_unknown_and_malformed),

@@ -25,6 +25,17 @@
 #include "tg/errors.h"
 #include "tg/loop.h"
 
+void db_settings_defaults(chat_settings_t *out)
+{
+    if (out == NULL) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    out->warn_limit = 3;
+    out->log_chat_id = 0;
+    (void)snprintf(out->warn_action, sizeof(out->warn_action), "%s", "mute");
+}
+
 /* Reusable upsert statements (SQL is never string-concatenated, ADR 0003). */
 /** @brief Prepared upsert for the `users` table. */
 #define DB_SQL_USERS                                                                               \
@@ -52,6 +63,53 @@
 #define DB_SQL_LIFT "UPDATE actions SET lifted=1 WHERE id=?1"
 /** @brief Resolve a username (case-insensitive) to a user id. */
 #define DB_SQL_FIND_USER "SELECT user_id FROM users WHERE username=?1 COLLATE NOCASE LIMIT 1"
+/** @brief Insert a warning. */
+#define DB_SQL_WARN_ADD                                                                            \
+    "INSERT INTO warns(chat_id, user_id, admin_id, reason, created_at) VALUES(?1, ?2, ?3, ?4, ?5)"
+/** @brief Count a user's warnings in a chat. */
+#define DB_SQL_WARN_COUNT "SELECT count(*) FROM warns WHERE chat_id=?1 AND user_id=?2"
+/** @brief Delete the newest warning for (chat, user). */
+#define DB_SQL_WARN_REMOVE_LAST                                                                    \
+    "DELETE FROM warns WHERE id=(SELECT id FROM warns WHERE chat_id=?1 AND user_id=?2 "            \
+    "ORDER BY id DESC LIMIT 1)"
+/** @brief Delete every warning for (chat, user). */
+#define DB_SQL_WARN_RESET "DELETE FROM warns WHERE chat_id=?1 AND user_id=?2"
+/** @brief List a user's warnings (newest first, one page). */
+#define DB_SQL_WARN_LIST                                                                           \
+    "SELECT id, admin_id, created_at, reason FROM warns WHERE chat_id=?1 AND user_id=?2 "          \
+    "ORDER BY id DESC LIMIT ?3"
+/** @brief Read a chat's moderation policy row. */
+#define DB_SQL_SETTINGS_GET                                                                        \
+    "SELECT warn_limit, warn_action, welcome_enabled, welcome_text, rules_text, log_chat_id "      \
+    "FROM chats WHERE chat_id=?1"
+/** @brief Masked settings write: set `chats.warn_limit`.
+ *
+ * Each SET statement is an upsert so it also succeeds before the asynchronous
+ * chat upsert has landed (first-run commands); the other columns take their
+ * schema defaults. Exactly one runs per job (see DB_SET_*). */
+#define DB_SQL_SET_WARN_LIMIT                                                                      \
+    "INSERT INTO chats(chat_id, warn_limit) VALUES(?1, ?2) ON CONFLICT(chat_id) "                  \
+    "DO UPDATE SET warn_limit=excluded.warn_limit"
+/** @brief Masked settings write: set `chats.warn_action`. */
+#define DB_SQL_SET_WARN_ACTION                                                                     \
+    "INSERT INTO chats(chat_id, warn_action) VALUES(?1, ?2) ON CONFLICT(chat_id) "                 \
+    "DO UPDATE SET warn_action=excluded.warn_action"
+/** @brief Masked settings write: set `chats.log_chat_id`. */
+#define DB_SQL_SET_LOG_CHAT                                                                        \
+    "INSERT INTO chats(chat_id, log_chat_id) VALUES(?1, ?2) ON CONFLICT(chat_id) "                 \
+    "DO UPDATE SET log_chat_id=excluded.log_chat_id"
+/** @brief Masked settings write: set `chats.welcome_enabled`. */
+#define DB_SQL_SET_WELCOME_ON                                                                      \
+    "INSERT INTO chats(chat_id, welcome_enabled) VALUES(?1, ?2) ON CONFLICT(chat_id) "             \
+    "DO UPDATE SET welcome_enabled=excluded.welcome_enabled"
+/** @brief Masked settings write: set `chats.welcome_text`. */
+#define DB_SQL_SET_WELCOME_TEXT                                                                    \
+    "INSERT INTO chats(chat_id, welcome_text) VALUES(?1, ?2) ON CONFLICT(chat_id) "                \
+    "DO UPDATE SET welcome_text=excluded.welcome_text"
+/** @brief Masked settings write: set `chats.rules_text`. */
+#define DB_SQL_SET_RULES_TEXT                                                                      \
+    "INSERT INTO chats(chat_id, rules_text) VALUES(?1, ?2) ON CONFLICT(chat_id) "                  \
+    "DO UPDATE SET rules_text=excluded.rules_text"
 
 /** @brief Schema migration v0 -> v1 (SPEC section 6). Idempotent via IF NOT EXISTS. */
 static const char *const SCHEMA_V1 =
@@ -201,13 +259,52 @@ static int migrate(sqlite3 *sdb)
 
 /** @brief Reusable prepared statements owned by the worker thread. */
 typedef struct {
-    sqlite3_stmt *upsert_user;    /**< DB_SQL_USERS. */
-    sqlite3_stmt *upsert_chat;    /**< DB_SQL_CHATS. */
-    sqlite3_stmt *insert_action;  /**< DB_SQL_ACTION. */
-    sqlite3_stmt *expire_actions; /**< DB_SQL_EXPIRE. */
-    sqlite3_stmt *lift_action;    /**< DB_SQL_LIFT. */
-    sqlite3_stmt *find_user;      /**< DB_SQL_FIND_USER. */
+    sqlite3_stmt *upsert_user;      /**< DB_SQL_USERS. */
+    sqlite3_stmt *upsert_chat;      /**< DB_SQL_CHATS. */
+    sqlite3_stmt *insert_action;    /**< DB_SQL_ACTION. */
+    sqlite3_stmt *expire_actions;   /**< DB_SQL_EXPIRE. */
+    sqlite3_stmt *lift_action;      /**< DB_SQL_LIFT. */
+    sqlite3_stmt *find_user;        /**< DB_SQL_FIND_USER. */
+    sqlite3_stmt *warn_add;         /**< DB_SQL_WARN_ADD. */
+    sqlite3_stmt *warn_count;       /**< DB_SQL_WARN_COUNT. */
+    sqlite3_stmt *warn_remove;      /**< DB_SQL_WARN_REMOVE_LAST. */
+    sqlite3_stmt *warn_reset;       /**< DB_SQL_WARN_RESET. */
+    sqlite3_stmt *warn_list;        /**< DB_SQL_WARN_LIST. */
+    sqlite3_stmt *settings_get;     /**< DB_SQL_SETTINGS_GET. */
+    sqlite3_stmt *set_warn_limit;   /**< DB_SQL_SET_WARN_LIMIT. */
+    sqlite3_stmt *set_warn_action;  /**< DB_SQL_SET_WARN_ACTION. */
+    sqlite3_stmt *set_log_chat;     /**< DB_SQL_SET_LOG_CHAT. */
+    sqlite3_stmt *set_welcome_on;   /**< DB_SQL_SET_WELCOME_ON. */
+    sqlite3_stmt *set_welcome_text; /**< DB_SQL_SET_WELCOME_TEXT. */
+    sqlite3_stmt *set_rules_text;   /**< DB_SQL_SET_RULES_TEXT. */
 } db_stmts_t;
+
+/**
+ * @brief Finalize every prepared statement (NULL-safe; idempotent).
+ *
+ * @param[in,out] st Statements to release.
+ */
+static void stmts_finalize(db_stmts_t *st)
+{
+    sqlite3_finalize(st->upsert_user);
+    sqlite3_finalize(st->upsert_chat);
+    sqlite3_finalize(st->insert_action);
+    sqlite3_finalize(st->expire_actions);
+    sqlite3_finalize(st->lift_action);
+    sqlite3_finalize(st->find_user);
+    sqlite3_finalize(st->warn_add);
+    sqlite3_finalize(st->warn_count);
+    sqlite3_finalize(st->warn_remove);
+    sqlite3_finalize(st->warn_reset);
+    sqlite3_finalize(st->warn_list);
+    sqlite3_finalize(st->settings_get);
+    sqlite3_finalize(st->set_warn_limit);
+    sqlite3_finalize(st->set_warn_action);
+    sqlite3_finalize(st->set_log_chat);
+    sqlite3_finalize(st->set_welcome_on);
+    sqlite3_finalize(st->set_welcome_text);
+    sqlite3_finalize(st->set_rules_text);
+}
 
 /**
  * @brief Open the database and prepare the reusable statements.
@@ -235,18 +332,28 @@ static int worker_open(const char *path, sqlite3 **out_db, db_stmts_t *out_st)
         sqlite3_stmt **slot;
         const char *sql;
     } prep[] = {
-        {&st.upsert_user, DB_SQL_USERS},    {&st.upsert_chat, DB_SQL_CHATS},
-        {&st.insert_action, DB_SQL_ACTION}, {&st.expire_actions, DB_SQL_EXPIRE},
-        {&st.lift_action, DB_SQL_LIFT},     {&st.find_user, DB_SQL_FIND_USER},
+        {&st.upsert_user, DB_SQL_USERS},
+        {&st.upsert_chat, DB_SQL_CHATS},
+        {&st.insert_action, DB_SQL_ACTION},
+        {&st.expire_actions, DB_SQL_EXPIRE},
+        {&st.lift_action, DB_SQL_LIFT},
+        {&st.find_user, DB_SQL_FIND_USER},
+        {&st.warn_add, DB_SQL_WARN_ADD},
+        {&st.warn_count, DB_SQL_WARN_COUNT},
+        {&st.warn_remove, DB_SQL_WARN_REMOVE_LAST},
+        {&st.warn_reset, DB_SQL_WARN_RESET},
+        {&st.warn_list, DB_SQL_WARN_LIST},
+        {&st.settings_get, DB_SQL_SETTINGS_GET},
+        {&st.set_warn_limit, DB_SQL_SET_WARN_LIMIT},
+        {&st.set_warn_action, DB_SQL_SET_WARN_ACTION},
+        {&st.set_log_chat, DB_SQL_SET_LOG_CHAT},
+        {&st.set_welcome_on, DB_SQL_SET_WELCOME_ON},
+        {&st.set_welcome_text, DB_SQL_SET_WELCOME_TEXT},
+        {&st.set_rules_text, DB_SQL_SET_RULES_TEXT},
     };
     for (size_t i = 0; i < sizeof(prep) / sizeof(prep[0]); ++i) {
         if (sqlite3_prepare_v2(sdb, prep[i].sql, -1, prep[i].slot, NULL) != SQLITE_OK) {
-            sqlite3_finalize(st.upsert_user);
-            sqlite3_finalize(st.upsert_chat);
-            sqlite3_finalize(st.insert_action);
-            sqlite3_finalize(st.expire_actions);
-            sqlite3_finalize(st.lift_action);
-            sqlite3_finalize(st.find_user);
+            stmts_finalize(&st);
             sqlite3_close(sdb);
             return -ERR_DB;
         }
@@ -269,6 +376,148 @@ static int step_done(sqlite3_stmt *s)
     sqlite3_reset(s);
     sqlite3_clear_bindings(s);
     return rc;
+}
+
+/**
+ * @brief Execute a warn job (add / remove-last / reset / list).
+ *
+ * Extracted from @ref worker_execute to keep its cognitive complexity bounded.
+ *
+ * @param[in]  st  Prepared statements.
+ * @param[in]  job Job to run.
+ * @param[out] res Result to fill (the count or the row list).
+ *
+ * @return 0 on success, -ERR_DB on failure.
+ */
+static int execute_warn(db_stmts_t *st, const db_job_t *job, db_result_t *res)
+{
+    if (job->kind == DB_JOB_WARN_ADD) {
+        sqlite3_stmt *s = st->warn_add;
+        sqlite3_bind_int64(s, 1, job->id); /* chat_id */
+        sqlite3_bind_int64(s, 2, job->user_id);
+        sqlite3_bind_int64(s, 3, job->admin_id);
+        sqlite3_bind_text(s, 4, job->reason, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(s, 5, job->created_at);
+        int rc = step_done(s);
+        if (rc != 0) {
+            return rc;
+        }
+        /* Report the new total so the caller can compare it to warn_limit. */
+        sqlite3_stmt *c = st->warn_count;
+        sqlite3_bind_int64(c, 1, job->id);
+        sqlite3_bind_int64(c, 2, job->user_id);
+        res->i64 = 0;
+        if (sqlite3_step(c) == SQLITE_ROW) {
+            res->i64 = sqlite3_column_int64(c, 0);
+        }
+        sqlite3_reset(c);
+        sqlite3_clear_bindings(c);
+        return 0;
+    }
+    if (job->kind == DB_JOB_WARN_REMOVE_LAST || job->kind == DB_JOB_WARN_RESET) {
+        sqlite3_stmt *s = job->kind == DB_JOB_WARN_REMOVE_LAST ? st->warn_remove : st->warn_reset;
+        sqlite3_bind_int64(s, 1, job->id);
+        sqlite3_bind_int64(s, 2, job->user_id);
+        return step_done(s);
+    }
+    /* DB_JOB_WARN_LIST */
+    sqlite3_stmt *s = st->warn_list;
+    sqlite3_bind_int64(s, 1, job->id);
+    sqlite3_bind_int64(s, 2, job->user_id);
+    sqlite3_bind_int(s, 3, (int)DB_MAX_WARNS);
+    res->warn_count = 0;
+    while (res->warn_count < DB_MAX_WARNS && sqlite3_step(s) == SQLITE_ROW) {
+        db_warn_t *w = &res->warns[res->warn_count];
+        w->id = sqlite3_column_int64(s, 0);
+        w->admin_id = sqlite3_column_int64(s, 1);
+        w->created_at = sqlite3_column_int64(s, 2);
+        const unsigned char *r = sqlite3_column_text(s, 3);
+        (void)snprintf(w->reason, sizeof(w->reason), "%s", r != NULL ? (const char *)r : "");
+        res->warn_count++;
+    }
+    sqlite3_reset(s);
+    sqlite3_clear_bindings(s);
+    return 0;
+}
+
+/**
+ * @brief Execute a settings job (get / masked set).
+ *
+ * Extracted from @ref worker_execute to keep its cognitive complexity bounded.
+ *
+ * @param[in]  st  Prepared statements.
+ * @param[in]  job Job to run.
+ * @param[out] res Result to fill (@c settings for a get).
+ *
+ * @return 0 on success, -ERR_DB or -EINVAL on failure.
+ */
+static int execute_settings(db_stmts_t *st, const db_job_t *job, db_result_t *res)
+{
+    if (job->kind == DB_JOB_SETTINGS_GET) {
+        sqlite3_stmt *s = st->settings_get;
+        sqlite3_bind_int64(s, 1, job->id);
+        db_settings_defaults(&res->settings);
+        if (sqlite3_step(s) == SQLITE_ROW) {
+            res->settings.warn_limit = sqlite3_column_int(s, 0);
+            const unsigned char *act = sqlite3_column_text(s, 1);
+            if (act != NULL) {
+                (void)snprintf(res->settings.warn_action, sizeof(res->settings.warn_action), "%s",
+                               (const char *)act);
+            }
+            res->settings.welcome_enabled = sqlite3_column_int(s, 2);
+            const unsigned char *wt = sqlite3_column_text(s, 3);
+            if (wt != NULL) {
+                (void)snprintf(res->settings.welcome_text, sizeof(res->settings.welcome_text), "%s",
+                               (const char *)wt);
+            }
+            const unsigned char *rt = sqlite3_column_text(s, 4);
+            if (rt != NULL) {
+                (void)snprintf(res->settings.rules_text, sizeof(res->settings.rules_text), "%s",
+                               (const char *)rt);
+            }
+            /* log_chat_id is NULL when unset; column_int64 returns 0 then, which
+             * already means "disabled". */
+            res->settings.log_chat_id = sqlite3_column_int64(s, 5);
+        }
+        sqlite3_reset(s);
+        sqlite3_clear_bindings(s);
+        return 0;
+    }
+    /* DB_JOB_SETTINGS_SET: one prepared statement per column, chosen by mask. */
+    sqlite3_stmt *s = NULL;
+    int numeric = 0; /* 1 => bind the value as an integer, 0 => as text */
+    switch (job->settings_mask) {
+    case DB_SET_WARN_LIMIT:
+        s = st->set_warn_limit;
+        numeric = 1;
+        break;
+    case DB_SET_WARN_ACTION:
+        s = st->set_warn_action;
+        break;
+    case DB_SET_LOG_CHAT:
+        s = st->set_log_chat;
+        numeric = 1;
+        break;
+    case DB_SET_WELCOME_ON:
+        s = st->set_welcome_on;
+        numeric = 1;
+        break;
+    case DB_SET_WELCOME_TEXT:
+        s = st->set_welcome_text;
+        break;
+    case DB_SET_RULES_TEXT:
+        s = st->set_rules_text;
+        break;
+    default:
+        return -EINVAL;
+    }
+    sqlite3_bind_int64(s, 1, job->id);
+    if (numeric != 0) {
+        sqlite3_bind_int64(s, 2, job->value);
+    } else {
+        sqlite3_bind_text(s, 2, job->text, -1, SQLITE_TRANSIENT);
+    }
+    return step_done(s);
 }
 
 /**
@@ -350,6 +599,14 @@ static int worker_execute(db_stmts_t *st, const db_job_t *job, db_result_t *res)
         sqlite3_clear_bindings(s);
         return 0;
     }
+    case DB_JOB_WARN_ADD:
+    case DB_JOB_WARN_REMOVE_LAST:
+    case DB_JOB_WARN_RESET:
+    case DB_JOB_WARN_LIST:
+        return execute_warn(st, job, res);
+    case DB_JOB_SETTINGS_GET:
+    case DB_JOB_SETTINGS_SET:
+        return execute_settings(st, job, res);
     default:
         return -ERR_DB;
     }
@@ -426,12 +683,7 @@ static void *db_worker(void *arg)
         (void)n;
     }
 
-    sqlite3_finalize(st.upsert_user);
-    sqlite3_finalize(st.upsert_chat);
-    sqlite3_finalize(st.insert_action);
-    sqlite3_finalize(st.expire_actions);
-    sqlite3_finalize(st.lift_action);
-    sqlite3_finalize(st.find_user);
+    stmts_finalize(&st);
     sqlite3_close(sdb);
     return NULL;
 }

@@ -72,6 +72,7 @@ add_library(
     src/cache.c
     src/db.c
     src/perms.c
+    src/settings.c
     src/router.c
     src/tg_api.c
     src/commands.c
@@ -83,6 +84,8 @@ add_library(
     src/cmd_util.c
     src/cmd_mod.c
     src/cmd_msg.c
+    src/cmd_warn.c
+    src/cmd_settings.c
     src/expiry.c)
 target_include_directories(
     libtgbot_core

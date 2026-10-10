@@ -464,6 +464,174 @@ static void test_find_user_by_username(void **state)
     unlink(path);
 }
 
+/** @brief Completion that copies a whole result (settings/warn-list queries). */
+static void capture_result(const db_result_t *res, void *ctx)
+{
+    db_result_t *out = ctx;
+    *out = *res;
+    out->status = 1; /* sentinel: the job ran */
+}
+
+/* Spin db_pump until a capture_result target has run. */
+static void pump_result(db_t *db, const db_result_t *out)
+{
+    for (int i = 0; i < 20000 && out->status != 1; ++i) {
+        db_pump(db);
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 1000000};
+        nanosleep(&ts, NULL);
+    }
+}
+
+static void test_warn_add_list_remove_reset(void **state)
+{
+    (void)state;
+    char path[32];
+    assert_int_equal(make_db_path(path, sizeof(path)), 0);
+    db_config_t cfg = {.path = path};
+    db_t *db = db_create(&cfg);
+    const db_ops_t *ops = db_ops(db);
+
+    /* Add three warnings; the returned count increases 1,2,3. */
+    for (int i = 1; i <= 3; ++i) {
+        db_result_t res = {0};
+        db_job_t add = {.kind = DB_JOB_WARN_ADD,
+                        .id = -100,
+                        .user_id = 7,
+                        .admin_id = 1,
+                        .created_at = 1000 + i};
+        (void)snprintf(add.reason, sizeof(add.reason), "reason%d", i);
+        assert_int_equal(ops->submit(ops->ctx, &add, capture_result, &res), 0);
+        pump_result(db, &res);
+        assert_int_equal(res.status, 1);
+        assert_int_equal(res.i64, i);
+    }
+    assert_int_equal(query_scalar(path, "SELECT count(*) FROM warns WHERE chat_id=-100;"), 3);
+
+    /* List returns newest first. */
+    db_result_t list = {0};
+    db_job_t lj = {.kind = DB_JOB_WARN_LIST, .id = -100, .user_id = 7};
+    assert_int_equal(ops->submit(ops->ctx, &lj, capture_result, &list), 0);
+    pump_result(db, &list);
+    assert_int_equal(list.warn_count, 3);
+    assert_string_equal(list.warns[0].reason, "reason3");
+    assert_int_equal(list.warns[0].admin_id, 1);
+
+    /* Remove the newest: two remain. */
+    db_job_t rm = {.kind = DB_JOB_WARN_REMOVE_LAST, .id = -100, .user_id = 7};
+    capture_t cap = {0};
+    assert_int_equal(ops->submit(ops->ctx, &rm, on_job, &cap), 0);
+    assert_int_equal(pump_until(db, &cap, 1), 0);
+    assert_int_equal(query_scalar(path, "SELECT count(*) FROM warns WHERE chat_id=-100;"), 2);
+
+    /* Reset clears the rest. */
+    db_job_t reset = {.kind = DB_JOB_WARN_RESET, .id = -100, .user_id = 7};
+    assert_int_equal(ops->submit(ops->ctx, &reset, on_job, &cap), 0);
+    assert_int_equal(pump_until(db, &cap, 2), 0);
+    assert_int_equal(query_scalar(path, "SELECT count(*) FROM warns WHERE chat_id=-100;"), 0);
+
+    db_destroy(db);
+    unlink(path);
+}
+
+static void test_settings_get_defaults_when_absent(void **state)
+{
+    (void)state;
+    char path[32];
+    assert_int_equal(make_db_path(path, sizeof(path)), 0);
+    db_config_t cfg = {.path = path};
+    db_t *db = db_create(&cfg);
+    const db_ops_t *ops = db_ops(db);
+
+    /* No chats row yet: the SPEC defaults are returned. */
+    db_result_t res = {0};
+    db_job_t get = {.kind = DB_JOB_SETTINGS_GET, .id = -100};
+    assert_int_equal(ops->submit(ops->ctx, &get, capture_result, &res), 0);
+    pump_result(db, &res);
+    assert_int_equal(res.settings.warn_limit, 3);
+    assert_string_equal(res.settings.warn_action, "mute");
+    assert_int_equal(res.settings.welcome_enabled, 0);
+    assert_int_equal(res.settings.log_chat_id, 0);
+
+    db_destroy(db);
+    unlink(path);
+}
+
+static void test_settings_set_round_trip(void **state)
+{
+    (void)state;
+    char path[32];
+    assert_int_equal(make_db_path(path, sizeof(path)), 0);
+    db_config_t cfg = {.path = path};
+    db_t *db = db_create(&cfg);
+    const db_ops_t *ops = db_ops(db);
+    capture_t cap = {0};
+
+    /* Each masked write targets one column, upserting the row if needed. */
+    db_job_t lim = {
+        .kind = DB_JOB_SETTINGS_SET, .id = -100, .settings_mask = DB_SET_WARN_LIMIT, .value = 5};
+    assert_int_equal(ops->submit(ops->ctx, &lim, on_job, &cap), 0);
+    db_job_t act = {
+        .kind = DB_JOB_SETTINGS_SET, .id = -100, .settings_mask = DB_SET_WARN_ACTION, .value = 0};
+    (void)snprintf(act.text, sizeof(act.text), "ban");
+    assert_int_equal(ops->submit(ops->ctx, &act, on_job, &cap), 0);
+    db_job_t wel = {
+        .kind = DB_JOB_SETTINGS_SET, .id = -100, .settings_mask = DB_SET_WELCOME_TEXT, .value = 0};
+    (void)snprintf(wel.text, sizeof(wel.text), "Hi {first}");
+    assert_int_equal(ops->submit(ops->ctx, &wel, on_job, &cap), 0);
+    db_job_t en = {
+        .kind = DB_JOB_SETTINGS_SET, .id = -100, .settings_mask = DB_SET_WELCOME_ON, .value = 1};
+    assert_int_equal(ops->submit(ops->ctx, &en, on_job, &cap), 0);
+    assert_int_equal(pump_until(db, &cap, 4), 0);
+    assert_int_equal(cap.status, 0);
+
+    /* The earlier columns survive later masked writes (upsert preserves them). */
+    db_result_t res = {0};
+    db_job_t get = {.kind = DB_JOB_SETTINGS_GET, .id = -100};
+    assert_int_equal(ops->submit(ops->ctx, &get, capture_result, &res), 0);
+    pump_result(db, &res);
+    assert_int_equal(res.settings.warn_limit, 5);
+    assert_string_equal(res.settings.warn_action, "ban");
+    assert_string_equal(res.settings.welcome_text, "Hi {first}");
+    assert_int_equal(res.settings.welcome_enabled, 1);
+
+    /* An unknown mask is rejected (capture_t preserves the status). */
+    capture_t bad_cap = {0};
+    db_job_t bad = {.kind = DB_JOB_SETTINGS_SET, .id = -100, .settings_mask = 0};
+    assert_int_equal(ops->submit(ops->ctx, &bad, on_job, &bad_cap), 0);
+    assert_int_equal(pump_until(db, &bad_cap, 1), 0);
+    assert_int_not_equal(bad_cap.status, 0);
+
+    db_destroy(db);
+    unlink(path);
+}
+
+static void test_settings_log_chat_round_trip(void **state)
+{
+    (void)state;
+    char path[32];
+    assert_int_equal(make_db_path(path, sizeof(path)), 0);
+    db_config_t cfg = {.path = path};
+    db_t *db = db_create(&cfg);
+    const db_ops_t *ops = db_ops(db);
+    capture_t cap = {0};
+
+    db_job_t set = {.kind = DB_JOB_SETTINGS_SET,
+                    .id = -100,
+                    .settings_mask = DB_SET_LOG_CHAT,
+                    .value = -100999};
+    assert_int_equal(ops->submit(ops->ctx, &set, on_job, &cap), 0);
+    assert_int_equal(pump_until(db, &cap, 1), 0);
+
+    db_result_t res = {0};
+    db_job_t get = {.kind = DB_JOB_SETTINGS_GET, .id = -100};
+    assert_int_equal(ops->submit(ops->ctx, &get, capture_result, &res), 0);
+    pump_result(db, &res);
+    assert_int_equal(res.settings.log_chat_id, -100999);
+
+    db_destroy(db);
+    unlink(path);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -476,6 +644,10 @@ int main(void)
         cmocka_unit_test(test_action_insert_and_expiry_sweep),
         cmocka_unit_test(test_permanent_action_is_never_swept),
         cmocka_unit_test(test_find_user_by_username),
+        cmocka_unit_test(test_warn_add_list_remove_reset),
+        cmocka_unit_test(test_settings_get_defaults_when_absent),
+        cmocka_unit_test(test_settings_set_round_trip),
+        cmocka_unit_test(test_settings_log_chat_round_trip),
         cmocka_unit_test(test_bad_args),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);

@@ -5,24 +5,34 @@ I/O runs asynchronously through `liburing` in a single-threaded event loop;
 blocking work (SQLite, DNS) is isolated in worker threads that signal the loop
 through an `eventfd`.
 
-> **Status: M4 — moderation commands.** The build system, sanitizer and coverage
-> presets, single-source-of-truth tables, introspection CLI, and documentation
-> skeleton (M0) are in place; the single-threaded io_uring event loop, TCP connect,
-> OpenSSL memory-BIO TLS, incremental HTTP client, worker-thread DNS, and a minimal
-> Bot API client that performs `getMe` (M1) are implemented; M2 adds reusable
-> keep-alive connections, a connection pool, a token-bucket rate limiter with 429
-> handling and exponential backoff, and a `getUpdates` long-poll loop; M3 adds
-> update parsing, a command router, a SQLite worker thread with `users`/`chats`
-> upserts, a per-chat administrator cache, and the permission model; and M4 adds
-> the moderation commands (`/ban`, `/unban`, `/kick`, `/mute`, `/unmute`, `/del`,
-> `/pin`, `/unpin`, `/purge`), duration parsing, and the expiring-actions sweeper.
-> Later milestones M5–M7 (warns/settings, automod/captcha, webhook) follow in order
-> per `docs/SPEC.md` §12.
+> **Status: M5 — warns, settings, welcome/rules, moderation log.** The build
+> system, sanitizer and coverage presets, single-source-of-truth tables,
+> introspection CLI, and documentation skeleton (M0) are in place; the
+> single-threaded io_uring event loop, TCP connect, OpenSSL memory-BIO TLS,
+> incremental HTTP client, worker-thread DNS, and a minimal Bot API client that
+> performs `getMe` (M1) are implemented; M2 adds reusable keep-alive connections, a
+> connection pool, a token-bucket rate limiter with 429 handling and exponential
+> backoff, and a `getUpdates` long-poll loop; M3 adds update parsing, a command
+> router, a SQLite worker thread with `users`/`chats` upserts, a per-chat
+> administrator cache, and the permission model; M4 adds the moderation commands
+> (`/ban`, `/unban`, `/kick`, `/mute`, `/unmute`, `/del`, `/pin`, `/unpin`,
+> `/purge`), duration parsing, and the expiring-actions sweeper; and M5 adds
+> warnings (`/warn`, `/unwarn`, `/warns`, `/resetwarns`), per-chat settings and the
+> `/settings` panel, welcome/rules (`/setwelcome`, `/welcome`, `/setrules`,
+> `/rules`) with join-time delivery, and the moderation log. Later milestones M6–M7
+> (automod/captcha, webhook) follow in order per `docs/SPEC.md` §12.
 
 ## Features
 
 - Moderation commands: `/ban`, `/unban`, `/kick`, `/mute`, `/unmute`, `/del`,
   `/pin`, `/unpin`, `/purge`, with `30s`/`10m`/`2h`/`7d`/`1w` durations.
+- Warnings: `/warn`, `/unwarn`, `/warns`, `/resetwarns`, with a per-chat limit and
+  auto-action (`ban`/`mute`/`kick`).
+- Per-chat settings: `/setwarnlimit`, `/setwarnaction`, `/setlog`, `/reload`, and
+  an inline-keyboard `/settings` panel.
+- Welcome and rules: `/setwelcome`, `/welcome on|off`, `/setrules`, `/rules`, with
+  a join welcome rendered from `{first}`/`{mention}`/`{chat}`/`{count}`.
+- A moderation log that mirrors every action to a configured channel.
 - Temporary bans and mutes that survive a restart and lift automatically.
 - Join captcha, antiflood, and blacklist automod (M6).
 - Fully asynchronous network I/O through `io_uring`.
@@ -107,6 +117,19 @@ The command set lives in `src/commands.def`; the table below is generated from i
 | `/pin` | ROLE_ADMIN |  | Pin the replied-to message |
 | `/unpin` | ROLE_ADMIN |  | Unpin the last pinned message |
 | `/purge` | ROLE_ADMIN |  | Delete messages from the replied message to now |
+| `/warn` | ROLE_ADMIN | `[target] [reason]` | Warn a user; auto-act at the limit |
+| `/unwarn` | ROLE_ADMIN | `[target]` | Remove a user's newest warning |
+| `/warns` | ROLE_ANYONE | `[target]` | List your warnings, or a user's (admins) |
+| `/resetwarns` | ROLE_ADMIN | `[target]` | Clear all of a user's warnings |
+| `/setwarnlimit` | ROLE_ADMIN | `<n>` | Set how many warnings trigger the action |
+| `/setwarnaction` | ROLE_ADMIN | `ban|mute|kick` | Set the action taken at the warning limit |
+| `/setlog` | ROLE_OWNER | `<chat_id|off>` | Set or clear the moderation log channel |
+| `/reload` | ROLE_ADMIN |  | Refresh the cached administrator list |
+| `/settings` | ROLE_ADMIN |  | Open the inline settings panel |
+| `/setwelcome` | ROLE_ADMIN | `<text>` | Set the join welcome message |
+| `/welcome` | ROLE_ADMIN | `on|off` | Enable or disable the join welcome |
+| `/setrules` | ROLE_ADMIN | `<text>` | Set the chat rules |
+| `/rules` | ROLE_ANYONE |  | Show the chat rules |
 <!-- END GENERATED: commands-table -->
 
 See [`docs/commands.md`](docs/commands.md) for the full reference.

@@ -189,6 +189,12 @@ static void parse_update_obj(yyjson_val *root, tg_update_t *out)
         copy_str(out->callback_id, sizeof(out->callback_id), yyjson_obj_get(callback, "id"));
         parse_user(yyjson_obj_get(callback, "from"), &out->callback_from);
         copy_str(out->callback_data, sizeof(out->callback_data), yyjson_obj_get(callback, "data"));
+        yyjson_val *cmsg = yyjson_obj_get(callback, "message");
+        if (cmsg != NULL && yyjson_is_obj(cmsg)) {
+            out->callback_has_message = 1;
+            out->callback_message_id = get_i64(cmsg, "message_id");
+            parse_chat(yyjson_obj_get(cmsg, "chat"), &out->callback_chat);
+        }
     } else if (chat_member != NULL && yyjson_is_obj(chat_member)) {
         out->kind = TG_UPD_CHAT_MEMBER;
         parse_membership(chat_member, out);

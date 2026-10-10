@@ -30,6 +30,7 @@
 #include "tg/perms.h"
 #include "tg/polling.h"
 #include "tg/router.h"
+#include "tg/settings.h"
 #include "tg/tg_api.h"
 #include "tg/tg_types.h"
 #include "tg/util.h"
@@ -290,9 +291,20 @@ static int run_services(loop_t *loop, tg_api_t *api, const config_values_t *cfg,
         return 1;
     }
 
+    /* Per-chat settings cache in front of the DB worker (SPEC section 4.4). */
+    settings_config_t scfg = {.db = db_ops(db), .clock = &util_clock_ops_real};
+    settings_t *settings = settings_create(&scfg);
+    if (settings == NULL) {
+        util_log(LOG_ERROR, "main", "failed to create the settings service");
+        perms_destroy(perms);
+        db_destroy(db);
+        return 1;
+    }
+
     router_config_t rcfg = {.api = tg_api_ops(api),
                             .db = db_ops(db),
                             .perms = perms,
+                            .settings = settings,
                             .clock = &util_clock_ops_real,
                             .wall = &util_wall_clock_real,
                             .bot_id = me->id,
@@ -300,6 +312,7 @@ static int run_services(loop_t *loop, tg_api_t *api, const config_values_t *cfg,
     router_t *router = router_create(&rcfg);
     if (router == NULL) {
         util_log(LOG_ERROR, "main", "failed to create the router");
+        settings_destroy(settings);
         perms_destroy(perms);
         db_destroy(db);
         return 1;
@@ -327,6 +340,7 @@ static int run_services(loop_t *loop, tg_api_t *api, const config_values_t *cfg,
     expiry_stop(expiry);
     expiry_destroy(expiry);
     router_destroy(router);
+    settings_destroy(settings);
     perms_destroy(perms);
     db_destroy(db);
     return 0;

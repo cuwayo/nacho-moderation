@@ -31,14 +31,24 @@
 
 /** @brief The reference-counted invocation. */
 struct cmd_call {
-    int refs;                                /**< Live references. */
-    struct cmd_ctx ctx;                      /**< The context handed to the handler. */
-    tg_message_t msg;                        /**< Copy of the originating message (async-safe). */
-    const tg_api_ops_t *api;                 /**< API seam (borrowed; outlives the call). */
-    const db_ops_t *db;                      /**< DB seam (borrowed; may be NULL). */
-    const wall_clock_ops_t *wall;            /**< Wall clock (borrowed). */
+    int refs;                     /**< Live references. */
+    struct cmd_ctx ctx;           /**< The context handed to the handler. */
+    tg_message_t msg;             /**< Copy of the originating message (async-safe). */
+    chat_settings_t settings;     /**< Copied chat policy (see cmd_ctx_set_settings). */
+    int has_settings;             /**< 1 once settings were copied in. */
+    const tg_api_ops_t *api;      /**< API seam (borrowed; outlives the call). */
+    const db_ops_t *db;           /**< DB seam (borrowed; may be NULL). */
+    const wall_clock_ops_t *wall; /**< Wall clock (borrowed). */
+    void (*invalidate_admins)(void *impl, int64_t chat_id);   /**< Admin-cache invalidator. */
+    void *invalidate_admins_impl;                             /**< Its implementation (perms). */
+    void (*invalidate_settings)(void *impl, int64_t chat_id); /**< Settings-cache invalidator. */
+    void *invalidate_settings_impl;                           /**< Its implementation (settings). */
     char target_label[CMD_TARGET_LABEL_MAX]; /**< Storage for @c ctx.target_label. */
 };
+
+/* Defined below; used by post_log before its definition. */
+int cmd_ctx_request_chat(struct cmd_ctx *ctx, method_id_t method, const char *body, size_t len,
+                         int64_t chat_id, tg_api_cb cb, void *user);
 
 /* --- JSON body helpers ----------------------------------------------------- */
 
@@ -96,20 +106,9 @@ static size_t json_append(char *body, size_t cap, size_t off, const char *s)
     return off;
 }
 
-/**
- * @brief Build a `sendMessage` body carrying @p html as an HTML reply.
- *
- * @param[out] body     Destination buffer.
- * @param[in]  cap      Capacity of @p body.
- * @param[in]  chat_id  Target chat.
- * @param[in]  html     HTML text.
- * @param[in]  reply_to Message id to reply to (0 for none).
- * @param[out] outlen   Receives the body length.
- *
- * @return 0 on success, -ENOSPC if @p body is too small.
- */
-static int build_send_message(char *body, size_t cap, int64_t chat_id, const char *html,
-                              int64_t reply_to, size_t *outlen)
+/** @brief Build a `sendMessage` body (see cmd_ctx.h for the contract). */
+int cmd_ctx_build_send_message(char *body, size_t cap, int64_t chat_id, const char *html,
+                               int64_t reply_to, size_t *outlen)
 {
     int n = snprintf(body, cap, "{\"chat_id\":%lld,\"text\":\"", (long long)chat_id);
     if (n < 0 || (size_t)n >= cap) {
@@ -148,7 +147,7 @@ static int call_reply(struct cmd_ctx *ctx, const char *html, int64_t reply_to)
 {
     char body[8192];
     size_t len = 0;
-    int rc = build_send_message(body, sizeof(body), ctx->chat_id, html, reply_to, &len);
+    int rc = cmd_ctx_build_send_message(body, sizeof(body), ctx->chat_id, html, reply_to, &len);
     if (rc != 0) {
         return rc;
     }
@@ -170,7 +169,80 @@ static void on_action_recorded(const db_result_t *res, void *user)
 }
 
 /**
+ * @brief Format the moderation-log line for one action.
+ *
+ * @param[out] text      Destination buffer.
+ * @param[in]  cap       Capacity of @p text.
+ * @param[in]  action    Action name.
+ * @param[in]  label     Target label (never NULL).
+ * @param[in]  target_id Target user id.
+ * @param[in]  admin_id  Acting admin's user id.
+ * @param[in]  reason    Reason ("" becomes "-").
+ * @param[in]  expires_at Expiry (Unix seconds; 0 = permanent).
+ */
+static void format_log_text(char *text, size_t cap, const char *action, const char *label,
+                            int64_t target_id, int64_t admin_id, const char *reason,
+                            int64_t expires_at)
+{
+    const char *why = (reason != NULL && reason[0] != '\0') ? reason : "-";
+    if (expires_at > 0) {
+        (void)snprintf(text, cap, "action=%s target=%s (id %lld) admin=%lld reason=%s until=%lld",
+                       action, label, (long long)target_id, (long long)admin_id, why,
+                       (long long)expires_at);
+    } else {
+        (void)snprintf(text, cap, "action=%s target=%s (id %lld) admin=%lld reason=%s", action,
+                       label, (long long)target_id, (long long)admin_id, why);
+    }
+}
+
+/**
+ * @brief Post a moderation log line to the chat's log channel (SPEC section 5.5).
+ *
+ * Fire and forget. The log text is HTML-escaped and mentions the action, target,
+ * admin, reason and (for a temporary action) the expiry. A no-op when no log
+ * channel is configured.
+ *
+ * @param[in] ctx        The context.
+ * @param[in] action     Action name.
+ * @param[in] target_id  Target user id.
+ * @param[in] reason     Reason (may be "").
+ * @param[in] expires_at Expiry (Unix seconds; 0 = permanent).
+ */
+static void post_log(struct cmd_ctx *ctx, const char *action, int64_t target_id, const char *reason,
+                     int64_t expires_at)
+{
+    const cmd_call_t *call = ctx->call;
+    if (!call->has_settings || call->settings.log_chat_id == 0 || call->api == NULL ||
+        call->api->request == NULL) {
+        return;
+    }
+    const char *label =
+        ctx->target_label != NULL && ctx->target_label[0] != '\0' ? ctx->target_label : "the user";
+    char text[1024];
+    format_log_text(text, sizeof(text), action, label, target_id, ctx->user_id, reason, expires_at);
+
+    size_t inlen = strlen(text);
+    size_t cap = inlen * 6u + 1u;
+    char *esc = malloc(cap);
+    if (esc == NULL) {
+        return;
+    }
+    size_t outlen = 0;
+    char body[8192];
+    size_t len = 0;
+    if (util_html_escape(text, inlen, esc, cap, &outlen) == 0 &&
+        cmd_ctx_build_send_message(body, sizeof(body), call->settings.log_chat_id, esc, 0, &len) ==
+            0) {
+        (void)cmd_ctx_request_chat(ctx, METHOD_SEND_MESSAGE, body, len, call->settings.log_chat_id,
+                                   NULL, NULL);
+    }
+    free(esc);
+}
+
+/**
  * @brief The @c cmd_ctx.record_action implementation: insert an `actions` row.
+ *
+ * Also posts to the configured moderation log channel (SPEC section 5.5).
  *
  * @param[in] ctx        The context.
  * @param[in] action     Action name.
@@ -181,8 +253,12 @@ static void on_action_recorded(const db_result_t *res, void *user)
 static void call_record_action(struct cmd_ctx *ctx, const char *action, int64_t target_id,
                                const char *reason, int64_t expires_at)
 {
-    cmd_call_t *call = ctx->call;
-    if (call->db == NULL || call->db->submit == NULL) {
+    /* Read the seams before the log post: cmd_ctx_request retains and releases
+     * the call internally, so do not touch ctx->call across it. */
+    const cmd_call_t *call = ctx->call;
+    const db_ops_t *db = call->db;
+    post_log(ctx, action, target_id, reason, expires_at);
+    if (db == NULL || db->submit == NULL) {
         return;
     }
     db_job_t job = {.kind = DB_JOB_INSERT_ACTION,
@@ -193,7 +269,91 @@ static void call_record_action(struct cmd_ctx *ctx, const char *action, int64_t 
                     .expires_at = expires_at};
     (void)snprintf(job.action, sizeof(job.action), "%s", action != NULL ? action : "");
     (void)snprintf(job.reason, sizeof(job.reason), "%s", reason != NULL ? reason : "");
-    (void)call->db->submit(call->db->ctx, &job, on_action_recorded, NULL);
+    (void)db->submit(db->ctx, &job, on_action_recorded, NULL);
+}
+
+/* --- DB-submit / invalidate hooks ------------------------------------------ */
+
+/** @brief Context for the retaining DB-submit wrapper. */
+typedef struct {
+    cmd_call_t *call; /**< Call kept alive across the job. */
+    db_cb cb;         /**< User callback. */
+    void *user;       /**< User context. */
+} retain_db_ctx_t;
+
+/**
+ * @brief Wrapper DB completion: run the user callback, then drop the call ref.
+ *
+ * @param[in] res DB result.
+ * @param[in] ctx The @ref retain_db_ctx_t.
+ */
+static void on_retained_db(const db_result_t *res, void *ctx)
+{
+    retain_db_ctx_t *rc = ctx;
+    if (rc->cb != NULL) {
+        rc->cb(res, rc->user);
+    }
+    cmd_call_release(rc->call);
+    free(rc);
+}
+
+/**
+ * @brief The @c cmd_ctx.db_submit implementation (see cmd_ctx.h).
+ *
+ * @param[in] ctx  Context.
+ * @param[in] job  Job to submit.
+ * @param[in] cb   Completion callback (may be NULL).
+ * @param[in] user Callback context.
+ *
+ * @return 0 if queued, negative errno on failure.
+ */
+static int call_db_submit(struct cmd_ctx *ctx, const db_job_t *job, db_cb cb, void *user)
+{
+    if (ctx == NULL || ctx->call == NULL || job == NULL) {
+        return -EINVAL;
+    }
+    cmd_call_t *call = ctx->call;
+    if (call->db == NULL || call->db->submit == NULL) {
+        return -EINVAL;
+    }
+    retain_db_ctx_t *rc = calloc(1, sizeof(*rc));
+    if (rc == NULL) {
+        return -ENOMEM;
+    }
+    rc->call = call;
+    rc->cb = cb;
+    rc->user = user;
+    cmd_call_retain(call);
+    int rc_ret = call->db->submit(call->db->ctx, job, on_retained_db, rc);
+    if (rc_ret != 0) {
+        cmd_call_release(call); /* undo the retain: the callback will not run */
+        free(rc);
+    }
+    return rc_ret;
+}
+
+/**
+ * @brief The @c cmd_ctx.invalidate_admins implementation (see cmd_ctx.h).
+ *
+ * @param[in] ctx Context.
+ */
+static void call_invalidate_admins(struct cmd_ctx *ctx)
+{
+    if (ctx != NULL && ctx->call != NULL && ctx->call->invalidate_admins != NULL) {
+        ctx->call->invalidate_admins(ctx->call->invalidate_admins_impl, ctx->chat_id);
+    }
+}
+
+/**
+ * @brief The @c cmd_ctx.invalidate_settings implementation (see cmd_ctx.h).
+ *
+ * @param[in] ctx Context.
+ */
+static void call_invalidate_settings(struct cmd_ctx *ctx)
+{
+    if (ctx != NULL && ctx->call != NULL && ctx->call->invalidate_settings != NULL) {
+        ctx->call->invalidate_settings(ctx->call->invalidate_settings_impl, ctx->chat_id);
+    }
 }
 
 /* --- Lifecycle ------------------------------------------------------------- */
@@ -218,6 +378,16 @@ cmd_call_t *cmd_call_create(const tg_api_ops_t *api, const db_ops_t *db,
     call->ctx.reply_ctx = call;
     call->ctx.record_action = call_record_action;
     call->ctx.record_action_ctx = call;
+    /* The db_submit hook is wired only when a DB seam exists, so handlers can use
+     * `ctx->db_submit == NULL` to mean "warnings/settings unavailable". */
+    if (db != NULL) {
+        call->ctx.db_submit = call_db_submit;
+        call->ctx.db_submit_ctx = call;
+    }
+    call->ctx.invalidate_admins = call_invalidate_admins;
+    call->ctx.invalidate_admins_ctx = call;
+    call->ctx.invalidate_settings = call_invalidate_settings;
+    call->ctx.invalidate_settings_ctx = call;
     return call;
 }
 
@@ -240,6 +410,43 @@ int cmd_call_set_target_label(cmd_call_t *call, const char *label)
                    label != NULL ? label : "");
     call->ctx.target_label = call->target_label;
     return 0;
+}
+
+int cmd_ctx_set_settings(struct cmd_ctx *ctx, const chat_settings_t *settings)
+{
+    if (ctx == NULL || ctx->call == NULL) {
+        return -EINVAL;
+    }
+    cmd_call_t *call = ctx->call;
+    if (settings == NULL) {
+        call->has_settings = 0;
+        call->ctx.settings = NULL;
+        return 0;
+    }
+    call->settings = *settings;
+    call->has_settings = 1;
+    call->ctx.settings = &call->settings;
+    return 0;
+}
+
+/** @brief Wire the admin-cache invalidator (see cmd_ctx.h for the contract). */
+void cmd_call_set_admin_invalidator(cmd_call_t *call, void (*fn)(void *, int64_t), void *impl)
+{
+    if (call == NULL) {
+        return;
+    }
+    call->invalidate_admins = fn;
+    call->invalidate_admins_impl = impl;
+}
+
+/** @brief Wire the settings-cache invalidator (see cmd_ctx.h for the contract). */
+void cmd_call_set_settings_invalidator(cmd_call_t *call, void (*fn)(void *, int64_t), void *impl)
+{
+    if (call == NULL) {
+        return;
+    }
+    call->invalidate_settings = fn;
+    call->invalidate_settings_impl = impl;
 }
 
 void cmd_call_retain(cmd_call_t *call)
@@ -288,6 +495,15 @@ static void on_retained(const api_result_t *res, void *ctx)
 int cmd_ctx_request(struct cmd_ctx *ctx, method_id_t method, const char *body, size_t len,
                     tg_api_cb cb, void *user)
 {
+    if (ctx == NULL) {
+        return -EINVAL;
+    }
+    return cmd_ctx_request_chat(ctx, method, body, len, ctx->chat_id, cb, user);
+}
+
+int cmd_ctx_request_chat(struct cmd_ctx *ctx, method_id_t method, const char *body, size_t len,
+                         int64_t chat_id, tg_api_cb cb, void *user)
+{
     if (ctx == NULL || ctx->call == NULL || ctx->call->api == NULL ||
         ctx->call->api->request == NULL) {
         return -EINVAL;
@@ -304,8 +520,7 @@ int cmd_ctx_request(struct cmd_ctx *ctx, method_id_t method, const char *body, s
     rc->cb = cb;
     rc->user = user;
     cmd_call_retain(call);
-    int rc_ret =
-        call->api->request(call->api->ctx, method, body, len, ctx->chat_id, 0, on_retained, rc);
+    int rc_ret = call->api->request(call->api->ctx, method, body, len, chat_id, 0, on_retained, rc);
     if (rc_ret != 0) {
         cmd_call_release(call); /* undo the retain: the callback will not run */
         free(rc);

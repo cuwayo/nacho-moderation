@@ -1,0 +1,32 @@
+{
+  "_comment": "M5 settings panel. Batch 1: the admin opens /settings (sendMessage with an inline_keyboard). Batch 2: the same user presses the welcome button (callback_query carrying the panel message), so the bot answers the callback and edits the panel in place with editMessageText. The callback_data is set:<chat>:<user>:welcome, matching the panel the bot sent.",
+  "updates": [
+    [
+      {
+        "update_id": 1,
+        "message": {
+          "message_id": 10,
+          "date": 1700000000,
+          "from": {"id": 200, "is_bot": false, "first_name": "Admin", "username": "admin"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "/settings"
+        }
+      }
+    ],
+    [
+      {
+        "update_id": 2,
+        "callback_query": {
+          "id": "cb-1",
+          "from": {"id": 200, "is_bot": false, "first_name": "Admin", "username": "admin"},
+          "data": "set:-1001234567890:200:welcome",
+          "message": {
+            "message_id": 10,
+            "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"}
+          }
+        }
+      }
+    ],
+    []
+  ]
+}

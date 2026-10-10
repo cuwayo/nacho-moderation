@@ -1,0 +1,60 @@
+{
+  "_comment": "M5 warn flow with the default policy (warn_limit=3, warn_action=mute). Three /warn commands reach the replied-to user; the third hits the limit, so restrictChatMember (mute) is issued and the warnings are cleared. The warns are independent FIFO DB jobs, so the counts are 1,2,3 in order. The empty trailing batch keeps polling after the commands are consumed.",
+  "updates": [
+    [
+      {
+        "update_id": 1,
+        "message": {
+          "message_id": 10,
+          "date": 1700000000,
+          "from": {"id": 200, "is_bot": false, "first_name": "Admin", "username": "admin"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "bad behavior"
+        }
+      },
+      {
+        "update_id": 2,
+        "message": {
+          "message_id": 11,
+          "date": 1700000001,
+          "from": {"id": 200, "is_bot": false, "first_name": "Admin", "username": "admin"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "/warn one",
+          "reply_to_message": {
+            "message_id": 10,
+            "from": {"id": 300, "is_bot": false, "first_name": "Spammer", "username": "spammer"}
+          }
+        }
+      },
+      {
+        "update_id": 3,
+        "message": {
+          "message_id": 12,
+          "date": 1700000002,
+          "from": {"id": 200, "is_bot": false, "first_name": "Admin", "username": "admin"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "/warn two",
+          "reply_to_message": {
+            "message_id": 10,
+            "from": {"id": 300, "is_bot": false, "first_name": "Spammer", "username": "spammer"}
+          }
+        }
+      },
+      {
+        "update_id": 4,
+        "message": {
+          "message_id": 13,
+          "date": 1700000003,
+          "from": {"id": 200, "is_bot": false, "first_name": "Admin", "username": "admin"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "/warn three",
+          "reply_to_message": {
+            "message_id": 10,
+            "from": {"id": 300, "is_bot": false, "first_name": "Spammer", "username": "spammer"}
+          }
+        }
+      }
+    ],
+    []
+  ]
+}

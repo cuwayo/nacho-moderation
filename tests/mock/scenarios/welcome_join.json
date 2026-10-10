@@ -1,0 +1,28 @@
+{
+  "_comment": "M5 welcome, part 1: the admin sets a welcome template and enables it. Run against a persistent DB so a second run (welcome_join_part2) can deliver the welcome on join. The empty trailing batch keeps polling after the commands are consumed.",
+  "updates": [
+    [
+      {
+        "update_id": 1,
+        "message": {
+          "message_id": 10,
+          "date": 1700000000,
+          "from": {"id": 200, "is_bot": false, "first_name": "Admin", "username": "admin"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "/setwelcome Welcome {first} to {chat}!"
+        }
+      },
+      {
+        "update_id": 2,
+        "message": {
+          "message_id": 11,
+          "date": 1700000001,
+          "from": {"id": 200, "is_bot": false, "first_name": "Admin", "username": "admin"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "/welcome on"
+        }
+      }
+    ],
+    []
+  ]
+}

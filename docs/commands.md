@@ -349,4 +349,466 @@ command itself.
 - The bot must hold `can_delete_messages`.
 - Messages the bot cannot see (or that were already deleted) are skipped by
   Telegram; a batch failure is logged but does not stop the remaining batches.
+
+### /warn
+
+Warn a user; auto-act at the limit.
+
+- **Usage:** `/warn [target] [reason]`
+- **Minimum role:** ROLE_ADMIN
+- **Caller right:** RIGHT_RESTRICT
+- **Bot right:** RIGHT_RESTRICT
+- **Flags:** CMDF_TARGET, CMDF_REASON, CMDF_GROUP_ONLY
+
+# /warn
+
+Record a warning against a user and, when the chat's warning limit is reached,
+apply the configured action and clear the warnings (SPEC section 5.2).
+
+## Examples
+
+```text
+/warn spamming links
+```
+
+Warns the replied-to user with the reason "spamming links" and replies with the
+new warning count.
+
+```text
+/warn @spammer repeated advertising
+/warn 123456789
+```
+
+## Edge cases
+
+- The target is resolved from a reply, a numeric id, or an `@username`, exactly
+  like the other moderation commands.
+- The warning is stored in the `warns` table with the caller as `admin_id`, the
+  reason and a timestamp.
+- When the count reaches the chat's `warn_limit` (set with `/setwarnlimit`) the
+  configured `warn_action` (`ban`, `mute` or `kick`, set with `/setwarnaction`) is
+  applied and the warnings are cleared. A `warn_limit` of `0` disables auto-action.
+- The auto-action reuses the matching moderation command, so its target guard,
+  API call and `actions` row are identical to a manual `/ban`, `/mute` or `/kick`.
+- The owner, other administrators and the bot itself cannot be warned.
+- The bot must hold `can_restrict_members`.
+
+### /unwarn
+
+Remove a user's newest warning.
+
+- **Usage:** `/unwarn [target]`
+- **Minimum role:** ROLE_ADMIN
+- **Caller right:** RIGHT_RESTRICT
+- **Bot right:** RIGHT_NONE
+- **Flags:** CMDF_TARGET, CMDF_GROUP_ONLY
+
+# /unwarn
+
+Remove the newest warning for a user.
+
+## Examples
+
+```text
+/unwarn
+```
+
+Removes the replied-to user's most recent warning and replies when it is done.
+
+```text
+/unwarn @spammer
+```
+
+## Edge cases
+
+- Removes only the newest warning; use `/resetwarns` to clear them all.
+- The target is resolved from a reply, a numeric id, or an `@username`.
+- If the user has no warnings the call is a harmless no-op.
+- The bot must hold `can_restrict_members`.
+
+### /warns
+
+List your warnings, or a user's (admins).
+
+- **Usage:** `/warns [target]`
+- **Minimum role:** ROLE_ANYONE
+- **Caller right:** RIGHT_NONE
+- **Bot right:** RIGHT_NONE
+- **Flags:** CMDF_TARGET, CMDF_GROUP_ONLY
+
+# /warns
+
+List warnings: your own, or (for administrators) another user's.
+
+## Examples
+
+```text
+/warns
+```
+
+Lists your own warnings, so any member can check their standing:
+
+```text
+You have 2 warning(s):
+1. repeated advertising
+2. spamming links
+```
+
+```text
+/warns @spammer
+```
+
+Lists another user's warnings; this form is admin-only.
+
+## Edge cases
+
+- With no target the command is self-service: any member sees their own warnings.
+- Naming another user (a reply, `@username` or numeric id) requires an
+  administrator, owner or sudo caller; others get a refusal.
+- At most one page (16 warnings) is listed; `/resetwarns` clears them all.
+- A warning without a reason is shown as `(no reason)`.
+- Read-only: listing does not require any Telegram right.
+
+### /resetwarns
+
+Clear all of a user's warnings.
+
+- **Usage:** `/resetwarns [target]`
+- **Minimum role:** ROLE_ADMIN
+- **Caller right:** RIGHT_RESTRICT
+- **Bot right:** RIGHT_NONE
+- **Flags:** CMDF_TARGET, CMDF_GROUP_ONLY
+
+# /resetwarns
+
+Clear every warning for a user.
+
+## Examples
+
+```text
+/resetwarns
+```
+
+Clears all warnings for the replied-to user and replies when it is done.
+
+```text
+/resetwarns @spammer
+```
+
+## Edge cases
+
+- Clears the whole history for that user, unlike `/unwarn` which removes one.
+- The target is resolved from a reply, a numeric id, or an `@username`.
+- The bot must hold `can_restrict_members`.
+
+### /setwarnlimit
+
+Set how many warnings trigger the action.
+
+- **Usage:** `/setwarnlimit <n>`
+- **Minimum role:** ROLE_ADMIN
+- **Caller right:** RIGHT_RESTRICT
+- **Bot right:** RIGHT_NONE
+- **Flags:** CMDF_GROUP_ONLY
+
+# /setwarnlimit
+
+Set how many warnings trigger the configured action.
+
+## Examples
+
+```text
+/setwarnlimit 5
+```
+
+Sets the limit to five warnings; the next `/warn` that reaches five applies the
+configured `warn_action` and clears the warnings.
+
+```text
+/setwarnlimit 0
+```
+
+Disables automatic action: warnings accumulate but nothing is applied
+automatically.
+
+## Edge cases
+
+- The argument is a plain integer between 0 and 1000; anything else is rejected
+  with the usage line.
+- The value is per chat and persisted in the `chats` table.
+- The limit is combined with `/setwarnaction`; see `/warn` for the auto-action.
+- The bot must hold `can_restrict_members`.
+
+### /setwarnaction
+
+Set the action taken at the warning limit.
+
+- **Usage:** `/setwarnaction ban|mute|kick`
+- **Minimum role:** ROLE_ADMIN
+- **Caller right:** RIGHT_RESTRICT
+- **Bot right:** RIGHT_NONE
+- **Flags:** CMDF_GROUP_ONLY
+
+# /setwarnaction
+
+Choose the action applied when a user reaches the warning limit.
+
+## Examples
+
+```text
+/setwarnaction mute
+```
+
+Sets the auto-action to `mute`; when the limit is reached the user is muted and
+their warnings are cleared.
+
+```text
+/setwarnaction ban
+/setwarnaction kick
+```
+
+## Edge cases
+
+- Accepted values are exactly `ban`, `mute` and `kick`; anything else is rejected.
+- The action reuses the matching moderation command, so `/ban`'s duration and
+  reason handling applies only when the action is issued manually; the
+  auto-action mutes/bans permanently and kicks immediately.
+- The default for a new chat is `mute`.
+- The bot must hold `can_restrict_members`.
+
+### /setlog
+
+Set or clear the moderation log channel.
+
+- **Usage:** `/setlog <chat_id|off>`
+- **Minimum role:** ROLE_OWNER
+- **Caller right:** RIGHT_NONE
+- **Bot right:** RIGHT_NONE
+- **Flags:** CMDF_GROUP_ONLY
+
+# /setlog
+
+Set or clear the moderation log channel (SPEC section 5.5).
+
+## Examples
+
+```text
+/setlog -1001234567890
+```
+
+Sends every subsequent moderation action to that channel as a log message.
+
+```text
+/setlog off
+```
+
+Disables the moderation log for this chat.
+
+## Edge cases
+
+- Owner-only: this is the one command restricted to the chat creator.
+- The argument is a numeric chat id, or the literal `off`.
+- The log message records the action, target, admin, reason and (for a temporary
+  action) the expiry time, and is sent with `parse_mode=HTML`.
+- The log channel is per chat and persisted in the `chats` table.
+
+### /reload
+
+Refresh the cached administrator list.
+
+- **Usage:** `/reload `
+- **Minimum role:** ROLE_ADMIN
+- **Caller right:** RIGHT_NONE
+- **Bot right:** RIGHT_NONE
+- **Flags:** CMDF_GROUP_ONLY
+
+# /reload
+
+Refresh the cached administrator list for this chat.
+
+## Examples
+
+```text
+/reload
+```
+
+Drops the cached `getChatAdministrators` result so the next command re-fetches
+it, then confirms.
+
+## Edge cases
+
+- The administrator list is cached for 10 minutes and invalidated automatically on
+  a `chat_member` update; `/reload` forces it immediately.
+- Useful after granting or revoking a right so the bot's permission checks see the
+  change at once.
+- Any administrator may run it (it needs no Telegram right).
+
+### /settings
+
+Open the inline settings panel.
+
+- **Usage:** `/settings `
+- **Minimum role:** ROLE_ADMIN
+- **Caller right:** RIGHT_CHANGE_INFO
+- **Bot right:** RIGHT_NONE
+- **Flags:** CMDF_GROUP_ONLY
+
+# /settings
+
+Open an inline-keyboard panel for the chat's settings.
+
+## Examples
+
+```text
+/settings
+```
+
+Sends a panel with a button showing the current welcome state:
+
+```text
+Chat settings
+[ Welcome: OFF ]
+```
+
+Pressing the button toggles the welcome, updates the panel in place and shows a
+short confirmation.
+
+## Edge cases
+
+- The panel is owned by the user who opened it: a button forwarded to someone else
+  is rejected ("This panel is not yours."), per SPEC section 10.
+- Only administrators holding `can_change_info` may toggle settings; others get a
+  refusal toast.
+- Each press is acknowledged with `answerCallbackQuery` and the panel is edited
+  with `editMessageText`, so the chat is not spammed with new messages.
+- The panel is per chat and requires the bot to hold no specific right beyond the
+  caller's `can_change_info` check.
+
+### /setwelcome
+
+Set the join welcome message.
+
+- **Usage:** `/setwelcome <text>`
+- **Minimum role:** ROLE_ADMIN
+- **Caller right:** RIGHT_CHANGE_INFO
+- **Bot right:** RIGHT_NONE
+- **Flags:** CMDF_GROUP_ONLY
+
+# /setwelcome
+
+Set the message sent when a new member joins (SPEC section 5.4).
+
+## Examples
+
+```text
+/setwelcome Welcome {first} to {chat}! You are member #{count}.
+```
+
+Saves the template; enable delivery with `/welcome on`.
+
+## Edge cases
+
+- Placeholders: `{first}` (first name), `{mention}` (a mention link),
+  `{chat}` (chat title) and `{count}` (member count). An unknown `{...}` token is
+  left as-is.
+- Substituted names are HTML-escaped, so a name cannot inject markup; the template
+  itself may contain Telegram HTML.
+- Saving a template does not enable delivery; use `/welcome on`.
+- The template is per chat and persisted in the `chats` table.
+- The bot must hold `can_change_info`.
+
+### /welcome
+
+Enable or disable the join welcome.
+
+- **Usage:** `/welcome on|off`
+- **Minimum role:** ROLE_ADMIN
+- **Caller right:** RIGHT_CHANGE_INFO
+- **Bot right:** RIGHT_NONE
+- **Flags:** CMDF_GROUP_ONLY
+
+# /welcome
+
+Enable or disable the join welcome message.
+
+## Examples
+
+```text
+/welcome on
+```
+
+Enables delivery of the saved welcome template when a member joins.
+
+```text
+/welcome off
+```
+
+Disables it without discarding the template.
+
+## Edge cases
+
+- The argument is exactly `on` or `off`; anything else is rejected.
+- The welcome is delivered on join for both supergroups (`chat_member`) and basic
+  groups (`new_chat_members`), using the template set with `/setwelcome`.
+- A join by another bot never triggers a welcome.
+- The bot must hold `can_change_info`.
+
+### /setrules
+
+Set the chat rules.
+
+- **Usage:** `/setrules <text>`
+- **Minimum role:** ROLE_ADMIN
+- **Caller right:** RIGHT_CHANGE_INFO
+- **Bot right:** RIGHT_NONE
+- **Flags:** CMDF_GROUP_ONLY
+
+# /setrules
+
+Set the chat rules text.
+
+## Examples
+
+```text
+/setrules Be kind. No spam. English or Indonesian only.
+```
+
+Saves the rules; members can read them with `/rules`.
+
+## Edge cases
+
+- The rules are free text and are shown verbatim by `/rules`.
+- Saving overwrites any previous rules.
+- The rules are per chat and persisted in the `chats` table.
+- The bot must hold `can_change_info`.
+
+### /rules
+
+Show the chat rules.
+
+- **Usage:** `/rules `
+- **Minimum role:** ROLE_ANYONE
+- **Caller right:** RIGHT_NONE
+- **Bot right:** RIGHT_NONE
+- **Flags:** CMDF_GROUP_ONLY
+
+# /rules
+
+Show the chat rules.
+
+## Examples
+
+```text
+/rules
+```
+
+Replies with the rules set by `/setrules`, or a note that none are set.
+
+## Edge cases
+
+- Available to any member: unlike `/setrules`, it needs no right, so ordinary
+  members can read the rules.
+- If no rules have been set, the bot replies that none are set.
+- The rules text is HTML-escaped before sending, so angle brackets and ampersands
+  are shown literally rather than interpreted as markup.
 <!-- END GENERATED: commands-reference -->

@@ -1,0 +1,17 @@
+{
+  "_comment": "M5 welcome, part 2: run against the DB written by welcome_join (part 1), where the welcome is already enabled with the template 'Welcome {first} to {chat}!'. A user joins the supergroup, so the bot fetches the member count and sends the rendered welcome. The empty trailing batch keeps polling after the join is consumed.",
+  "updates": [
+    [
+      {
+        "update_id": 1,
+        "chat_member": {
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "from": {"id": 300, "is_bot": false, "first_name": "Newbie"},
+          "old_chat_member": {"status": "left", "user": {"id": 300, "is_bot": false, "first_name": "Newbie"}},
+          "new_chat_member": {"status": "member", "user": {"id": 300, "is_bot": false, "first_name": "Newbie"}}
+        }
+      }
+    ],
+    []
+  ]
+}

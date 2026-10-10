@@ -30,9 +30,16 @@ implementation progresses; the binding rules live in [`SPEC.md`](SPEC.md).
 > invocation (`src/cmd_ctx.c`), the injectable wall clock (`src/util.c`), and the
 > expiring-actions sweeper (`src/expiry.c`). The router now resolves targets
 > (`@username` via the `users` cache) and derives caller/target/bot roles from one
-> `getChatAdministrators` fetch. Warns, settings, and automod arrive in M5–M6.
+> `getChatAdministrators` fetch.
+>
+> **Implemented in M5:** the warning commands `/warn /unwarn /warns /resetwarns`
+> (`src/cmd_warn.c`), the settings/welcome/rules/reload commands and the
+> `/settings` inline-keyboard panel (`src/cmd_settings.c`), the per-chat settings
+> service with a TTL cache (`src/settings.c`), join-time welcome delivery, the
+> moderation log, and inline-keyboard callback routing (`src/router.c`). Automod
+> (locks, blacklist, antiflood) and captcha arrive in M6.
 
-## Module map (M1–M4)
+## Module map (M1–M5)
 
 | Module | Responsibility |
 |---|---|
@@ -52,6 +59,7 @@ implementation progresses; the binding rules live in [`SPEC.md`](SPEC.md).
 | `cmd_ctx` | Reference-counted command invocation; reply and action-recording hooks |
 | `cmd_*` | One handler per command; build the API body, issue it, reply |
 | `cmd_util` | Shared `[duration] [reason]` parsing and the target guard |
+| `settings` | Per-chat policy TTL cache over the DB worker (warns/welcome/rules/log) |
 | `expiry` | 30 s sweeper that lifts expired temp bans/mutes (SPEC section 5.6) |
 | `db` | SQLite worker thread, MPSC job queue, migrations, upserts, actions, eventfd handoff |
 | `cache` | In-memory hash map with TTL (admin cache and other hot data) |

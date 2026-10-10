@@ -126,6 +126,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the `integration-moderation` end-to-end test with `ban_reply`,
   `ban_nonadmin`, `ban_username`, and `kick_reply` scenarios.
 
+### Added (M5)
+
+- M5: warning commands `src/cmd_warn.c` — `/warn` (records a warning and, at the
+  per-chat limit, applies the configured action and clears the warnings),
+  `/unwarn`, `/warns` and `/resetwarns` (SPEC section 5.2). `/warns` is
+  self-service: with no target any member sees their own warnings, while naming
+  another user is admin-only.
+- M5: settings, welcome/rules and reload commands `src/cmd_settings.c` —
+  `/setwarnlimit`, `/setwarnaction`, `/setlog` (owner-only), `/reload`,
+  `/setwelcome`, `/welcome on|off`, `/setrules`, `/rules` (readable by any member)
+  and the `/settings` inline-keyboard panel (SPEC sections 5.2, 5.4, 5.5).
+- M5: join-time welcome delivery — the bot greets new members in supergroups
+  (`chat_member`) and basic groups (`new_chat_members`), rendering the
+  `{first}`/`{mention}`/`{chat}`/`{count}` placeholders and fetching the member
+  count with `getChatMemberCount` (SPEC section 5.4).
+- M5: the moderation log — every moderation action also posts to the chat's
+  configured log channel when `setlog` is set (SPEC section 5.5).
+- M5: a per-chat settings service (`src/settings.c`, `include/tg/settings.h`) with
+  a TTL cache in front of the DB worker, mirroring the administrator cache, plus
+  the `chats` policy columns it reads and writes (SPEC section 4.4).
+- M5: DB worker jobs for warns (add/list/remove-last/reset) and settings
+  (masked get/set) with prepared statements (`src/db.c`, `include/tg/db.h`); the
+  `chats` schema already covered M5, so no migration was needed.
+- M5: `cmd_ctx` gained a settings snapshot, a `db_submit` hook (retains the
+  invocation across a DB job), admin/settings cache-invalidator hooks, and
+  `cmd_ctx_request_chat` for rate-limiting an outbound call against an explicit
+  chat (the moderation log).
+- M5: flag-driven command parsing — `router_parse_command_ex` consumes a leading
+  target token only for commands that take one, so `/setwarnlimit 5` and
+  `/setlog -100…` keep their numeric argument.
+- M5: inline-keyboard callbacks — the router parses `callback_query.message` and
+  dispatches a settings-panel press, enforcing the SPEC section 10 user-ownership
+  check before toggling a setting.
+- M5 API methods: `getChatMemberCount`, `answerCallbackQuery`, `editMessageText`
+  (each with a mock-server handler and a docs row, C9).
+- M5 tests: `test_cmd_warn`, `test_cmd_settings`, `test_settings`, extended
+  `test_db` (warn/settings jobs), `test_cmd_mod` (log post), `test_router`
+  (flag-driven parsing) and `test_tg_types` (callback message); a
+  `fuzz_callback_data` fuzz target; and the `integration-m5` end-to-end test with
+  `warn_limit_action`, `welcome_join`, `welcome_join_part2` and `settings_panel`
+  scenarios.
+
 ### Fixed
 
 - M1/M2 TLS: a request queued before the handshake completed (the API pool queues
