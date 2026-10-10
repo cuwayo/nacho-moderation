@@ -11,6 +11,7 @@
 #include <stdint.h>
 // NOLINTEND(misc-include-cleaner)
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -188,6 +189,42 @@ static void test_getters_null_and_bounds(void **state)
     assert_int_equal(config_get_bool(NULL, CFG_MODE), 0);
 }
 
+static void test_i64_list_parsing(void **state)
+{
+    (void)state;
+    char *path = NULL;
+    assert_int_equal(write_temp("bot_token = \"x\"\nsudo_ids = \"111, 222,333\"\n", &path), 0);
+    config_values_t v;
+    assert_int_equal(config_load(path, NULL, &v), 0);
+
+    int64_t out[8];
+    size_t count = 0;
+    assert_int_equal(config_get_i64_list(&v, CFG_SUDO_IDS, out, 8, &count), 0);
+    assert_int_equal(count, 3);
+    assert_int_equal(out[0], 111);
+    assert_int_equal(out[1], 222);
+    assert_int_equal(out[2], 333);
+
+    /* Empty list yields zero entries. */
+    assert_int_equal(config_load(NULL, NULL, &v), 0);
+    assert_int_equal(config_get_i64_list(&v, CFG_SUDO_IDS, out, 8, &count), 0);
+    assert_int_equal(count, 0);
+
+    /* Too-small buffer reports -ENOSPC. */
+    assert_int_equal(config_load(path, NULL, &v), 0);
+    assert_int_equal(config_get_i64_list(&v, CFG_SUDO_IDS, out, 1, &count), -ENOSPC);
+
+    /* Malformed entry is rejected. */
+    char *bad = NULL;
+    assert_int_equal(write_temp("bot_token = \"x\"\nsudo_ids = \"1,x\"\n", &bad), 0);
+    assert_int_equal(config_load(bad, NULL, &v), 0);
+    assert_int_equal(config_get_i64_list(&v, CFG_SUDO_IDS, out, 8, &count), -EINVAL);
+    free(bad);
+
+    assert_int_equal(config_get_i64_list(NULL, CFG_SUDO_IDS, NULL, 8, &count), -EINVAL);
+    free(path);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -203,6 +240,7 @@ int main(void)
         cmocka_unit_test(test_load_file_and_override_precedence),
         cmocka_unit_test(test_load_rejects_bad_enum),
         cmocka_unit_test(test_getters_null_and_bounds),
+        cmocka_unit_test(test_i64_list_parsing),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

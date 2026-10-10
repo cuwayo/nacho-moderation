@@ -218,4 +218,24 @@ long config_get_int(const config_values_t *v, cfg_id_t id);
  */
 int config_get_bool(const config_values_t *v, cfg_id_t id);
 
+/**
+ * @brief Parse a CFG_I64_LIST value into @p out.
+ *
+ * Splits the comma-separated string, tolerating spaces around each entry, and
+ * parses each as a signed 64-bit integer. This is the only accessor for
+ * CFG_I64_LIST keys (currently `sudo_ids`).
+ *
+ * @param[in]  v       Loaded values.
+ * @param[in]  id      Key.
+ * @param[out] out     Array receiving the parsed ids.
+ * @param[in]  cap     Capacity of @p out (number of entries).
+ * @param[out] count   Receives the number of ids written.
+ *
+ * @return 0 on success (including an empty list), -EINVAL on a malformed entry
+ *         or bad arguments, -ENOSPC if the list exceeds @p cap.
+ * @thread_safety Read-only; safe from any thread.
+ */
+int config_get_i64_list(const config_values_t *v, cfg_id_t id, int64_t *out, size_t cap,
+                        size_t *count);
+
 #endif /* NM_CONFIG_H */

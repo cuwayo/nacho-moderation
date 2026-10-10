@@ -1,0 +1,31 @@
+{
+  "_comment": "A /help command in a PRIVATE chat. Telegram rejects getChatAdministrators for private chats (ok=false), so the router must NOT call it: it resolves the caller locally and replies with sendMessage. The getChatAdministrators fault is a tripwire: if the router calls it, the test's 'no such call' assertion fails.",
+  "faults": {
+    "getChatAdministrators": [
+      {
+        "kind": "status",
+        "status": 400,
+        "body": {
+          "ok": false,
+          "error_code": 400,
+          "description": "Bad Request: chat member list is not available for private chats"
+        }
+      }
+    ]
+  },
+  "updates": [
+    [
+      {
+        "update_id": 1,
+        "message": {
+          "message_id": 1,
+          "date": 1700000000,
+          "from": {"id": 500, "is_bot": false, "first_name": "Someone", "username": "someone"},
+          "chat": {"id": 500, "type": "private", "first_name": "Someone"},
+          "text": "/help"
+        }
+      }
+    ],
+    []
+  ]
+}

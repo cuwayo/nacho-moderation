@@ -18,6 +18,9 @@ coverage/
 *.db-wal
 *.db-shm
 
+# Local configuration (holds the bot token; never commit)
+/config.toml
+
 # Python bytecode (check/docgen scripts)
 __pycache__/
 *.pyc

@@ -59,6 +59,14 @@ any --error / -ETIME--> CONN_ERROR
 resubmits the remaining bytes; `-ECANCELED` on the linked timeout is the normal
 cancellation when its companion completed and is ignored.
 
+> **TLS request buffering:** `conn_send_request()` may be called while the
+> connection is still `CONN_CONNECTING`/`CONN_TLS_HANDSHAKE` (the API pool does
+> exactly this). `SSL_write()` cannot accept application data before the
+> handshake, and OpenSSL retains nothing it refuses, so the plaintext is buffered
+> in the connection and encrypted by `conn_pump()`/`conn_flush_request()` once the
+> session is established. Encrypting early would silently drop the request and
+> block the loop forever in `io_uring_wait_cqe`.
+
 ## M2 request flow (state transitions)
 
 ```
@@ -75,3 +83,18 @@ progress (next rate-limiter token or backoff expiry); there is no polling on the
 main thread. The long-poll's own deadline is derived from `polling.timeout`, not
 `api.request_timeout_ms`, so a 30 s poll is not aborted by a shorter request
 timeout.
+
+## M3 DB worker handoff (eventfd)
+
+```
+loop:   db_arm --prep OP_EVENTFD--> armed
+worker: job done --push response queue--> write(eventfd)
+loop:   OP_EVENTFD completion --db_pump (callbacks)--> db_arm (re-arm) --> armed
+```
+
+The loop submits one `OP_EVENTFD` read on the DB worker's eventfd and re-arms it
+after every completion, so a completion that lands between the read finishing and
+the re-arm is still observed (the eventfd counter accumulates). The loop thread
+never touches SQLite: it only enqueues `db_job_t` values under a mutex and drains
+the response queue in `db_pump()`. This is the same worker-thread pattern the DNS
+resolver uses, and it is the only new io_uring consumer in M3.

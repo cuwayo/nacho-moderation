@@ -1,0 +1,18 @@
+{
+  "_comment": "A /help command from an administrator: the router resolves the caller via getChatAdministrators and replies with sendMessage. The empty trailing batch keeps polling after the command is consumed.",
+  "updates": [
+    [
+      {
+        "update_id": 1,
+        "message": {
+          "message_id": 1,
+          "date": 1700000000,
+          "from": {"id": 200, "is_bot": false, "first_name": "Admin", "username": "admin"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "/help"
+        }
+      }
+    ],
+    []
+  ]
+}

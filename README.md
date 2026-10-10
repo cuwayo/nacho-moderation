@@ -5,16 +5,19 @@ I/O runs asynchronously through `liburing` in a single-threaded event loop;
 blocking work (SQLite, DNS) is isolated in worker threads that signal the loop
 through an `eventfd`.
 
-> **Status: M2 — HTTP keep-alive, API pool, rate limiter, retry, `getUpdates`
-> polling.** The build system, sanitizer and coverage presets, single-source-of-truth
-> tables, introspection CLI, and documentation skeleton (M0) are in place; the
-> single-threaded io_uring event loop, TCP connect, OpenSSL memory-BIO TLS,
-> incremental HTTP client, worker-thread DNS, and a minimal Bot API client that
-> performs `getMe` (M1) are implemented; and M2 adds reusable keep-alive
-> connections, a connection pool, a token-bucket rate limiter with 429 handling
-> and exponential backoff, and a `getUpdates` long-poll loop. Later milestones
-> M3–M7 (update parsing and DB, commands, automod, captcha, webhook) follow in
-> order per `docs/SPEC.md` §12.
+> **Status: M3 — update parsing, router, DB worker, upserts, admin cache, and
+> permissions.** The build system, sanitizer and coverage presets,
+> single-source-of-truth tables, introspection CLI, and documentation skeleton
+> (M0) are in place; the single-threaded io_uring event loop, TCP connect,
+> OpenSSL memory-BIO TLS, incremental HTTP client, worker-thread DNS, and a
+> minimal Bot API client that performs `getMe` (M1) are implemented; M2 adds
+> reusable keep-alive connections, a connection pool, a token-bucket rate limiter
+> with 429 handling and exponential backoff, and a `getUpdates` long-poll loop;
+> and M3 adds update parsing, a command router, a SQLite worker thread with
+> `users`/`chats` upserts, a per-chat administrator cache, and the permission
+> model, so `/help` now replies for real. Later milestones M4–M7 (moderation
+> commands, warns/settings, automod/captcha, webhook) follow in order per
+> `docs/SPEC.md` §12.
 
 ## Features (planned)
 
@@ -23,6 +26,7 @@ through an `eventfd`.
 - Fully asynchronous network I/O through `io_uring`.
 - Pooled keep-alive Bot API client with outbound rate limiting and retries.
 - `getUpdates` long-polling (webhook mode in M7).
+- SQLite persistence on a dedicated worker thread, with an eventfd handoff.
 - Single source of truth for commands and config keys, checked in CI.
 
 ## Binding specifications
@@ -155,7 +159,9 @@ A hardened systemd unit and Dockerfile are added in M7. See
 include/tg/       public headers (tg_ module prefix)
 src/              first-party sources; *.def SSOT tables; libtgbot_core + tgbot
 tests/unit/       cmocka unit tests (test_*.c)
+tests/integration/ end-to-end tests against the mock Telegram server
 tests/fuzz/       libFuzzer harnesses (fuzz_*.c)
+tests/mock/       scripted mock Bot API server + scenarios
 tests/scripts/    unit tests for the Python check scripts
 tests/golden/     golden files (e.g. --help output)
 docs/             prose docs, Doxygen config, ADRs, man pages

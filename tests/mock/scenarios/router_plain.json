@@ -1,0 +1,18 @@
+{
+  "_comment": "A plain (non-command) message: the router upserts the sender and chat but sends no reply.",
+  "updates": [
+    [
+      {
+        "update_id": 1,
+        "message": {
+          "message_id": 1,
+          "date": 1700000000,
+          "from": {"id": 300, "is_bot": false, "first_name": "Member", "username": "member"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "just chatting"
+        }
+      }
+    ],
+    []
+  ]
+}

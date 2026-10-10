@@ -16,8 +16,15 @@ implementation progresses; the binding rules live in [`SPEC.md`](SPEC.md).
 > (`src/api_pool.c`), the API client facade (`src/tg_api.c`), the API method table
 > (`src/api_methods.c`), runtime counters (`src/metrics.c`), and the `getUpdates`
 > long-poll loop (`src/polling.c`).
+>
+> **Implemented in M3:** update parsing (`src/tg_types.c`), the command router
+> (`src/router.c`), the SQLite worker thread with `users`/`chats` upserts
+> (`src/db.c`), the TTL cache (`src/cache.c`), the permission model and admin cache
+> (`src/perms.c`), and a real `/help` reply rendered from the command table
+> (`src/commands.c`, `src/cmd_help.c`). Remaining command groups and automod arrive
+> in M4–M6.
 
-## Module map (M1–M2)
+## Module map (M1–M3)
 
 | Module | Responsibility |
 |---|---|
@@ -32,6 +39,12 @@ implementation progresses; the binding rules live in [`SPEC.md`](SPEC.md).
 | `api_pool` | Keep-alive connection pool, request queue, rate-limit gating, retries, dispatch timer |
 | `tg_api` | API client facade, method wrappers, JSON parsing, injectable `tg_api_ops_t` seam |
 | `polling` | `getUpdates` long-poll loop and offset tracking |
+| `tg_types` | Parse `getUpdates` batches into bounded Update/Message/User/Chat structs |
+| `router` | Parse `/command`, resolve target, check permissions, dispatch handlers |
+| `db` | SQLite worker thread, MPSC job queue, migrations, `users`/`chats` upserts, eventfd handoff |
+| `cache` | In-memory hash map with TTL (admin cache and other hot data) |
+| `perms` | Role/right checks and the per-chat administrator cache |
+| `commands` | Command table (`commands.def`), lookup, `/help` rendering, `setMyCommands` |
 | `metrics` | Runtime counters (SIGUSR1 dump) |
 | `util` | Arena allocator, string builder, duration parser, HTML escape, injectable clock, logger |
 
@@ -57,9 +70,19 @@ loop through an `eventfd`.
 
 | Thread | Owns | Notes |
 |---|---|---|
-| Main | io_uring ring, connection state machines, router | Never blocks (see below) |
-| DB worker | SQLite connection and prepared statements | Signalled via `eventfd` |
+| Main | io_uring ring, connection state machines, router, permission engine, admin cache | Never blocks (see below) |
+| DB worker | SQLite connection and prepared statements; the job and response queues | Woken via `cond`; signals the loop via `eventfd` read through io_uring |
 | DNS worker | `getaddrinfo` result at startup and refresh | Signalled via `eventfd` |
+
+### DB worker handoff (M3)
+
+The loop thread only ever touches the DB job/response queues (under a mutex) and
+the eventfd; SQLite and its prepared statements belong exclusively to the worker.
+`db_arm()` prepares one `OP_EVENTFD` read at startup. When a job completes the
+worker appends to the response queue and writes the eventfd; the read's completion
+runs `db_pump()` (which fires the callbacks on the loop thread) and re-arms the
+next read. This is the same worker-thread + eventfd pattern as `resolver`, and it
+keeps the main thread free of any SQLite or file syscall (ADR 0003).
 
 ## Error-handling policy
 
@@ -79,6 +102,7 @@ from that file by `scripts/docgen.py`.
 | DB | -106 | LOG_ERROR | no | Database error from the DB worker |
 | PARSE | -107 | LOG_WARN | no | JSON or response parsing failure |
 | PROTO | -108 | LOG_ERROR | no | Protocol violation (bad HTTP, oversized body) |
+| PERM | -109 | LOG_INFO | no | Caller or bot lacks the required permission |
 <!-- END GENERATED: error-classes -->
 
 ## Non-blocking rule

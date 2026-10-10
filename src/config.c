@@ -10,6 +10,7 @@
 #include "config.h"
 
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -514,4 +515,47 @@ int config_get_bool(const config_values_t *v, cfg_id_t id)
 {
     const char *s = config_get_str(v, id);
     return strcmp(s, "true") == 0 || strcmp(s, "1") == 0 || strcmp(s, "yes") == 0;
+}
+
+/** @brief Skip spaces, tabs and commas in a list value. @return Advanced pointer. */
+static const char *skip_list_separators(const char *s)
+{
+    while (*s == ' ' || *s == '\t' || *s == ',') {
+        s++;
+    }
+    return s;
+}
+
+int config_get_i64_list(const config_values_t *v, cfg_id_t id, int64_t *out, size_t cap,
+                        size_t *count)
+{
+    if (out == NULL || count == NULL) {
+        return -EINVAL;
+    }
+    *count = 0;
+
+    const char *s = skip_list_separators(config_get_str(v, id));
+    while (*s != '\0') {
+        errno = 0;
+        char *end = NULL;
+        long long val = strtoll(s, &end, 10);
+        if (end == s || errno != 0) {
+            return -EINVAL;
+        }
+        if (*count >= cap) {
+            return -ENOSPC;
+        }
+        out[(*count)++] = (int64_t)val;
+
+        /* Only spaces/tabs may precede a separator (or the end of the list). */
+        s = end;
+        while (*s == ' ' || *s == '\t') {
+            s++;
+        }
+        if (*s != '\0' && *s != ',') {
+            return -EINVAL;
+        }
+        s = skip_list_separators(s);
+    }
+    return 0;
 }

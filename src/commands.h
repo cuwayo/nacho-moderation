@@ -15,8 +15,9 @@
 #include <stddef.h>
 
 #include "tables.h"
+#include "tg/util.h"
 
-/** @brief Per-invocation command context (filled in from M3). */
+/** @brief Per-invocation command context (defined in tg/cmd_ctx.h). */
 typedef struct cmd_ctx cmd_ctx_t;
 
 /** @brief Command identifiers, one per commands.def row, plus CMD_COUNT. */
@@ -58,5 +59,38 @@ extern const cmd_desc_t cmd_table[CMD_COUNT];
  * @thread_safety Read-only; safe from any thread.
  */
 const cmd_desc_t *cmd_lookup(const char *name);
+
+/**
+ * @brief Render the /help text for a caller into @p out.
+ *
+ * Lists every non-hidden command whose @c min_role is at most @p role (owner and
+ * sudo see everything). Rendered entirely from @ref cmd_table so the text cannot
+ * drift from the command set (SPEC-ADDENDUM-SSOT S2).
+ *
+ * @param[in]  role     Caller's role.
+ * @param[in]  is_group 1 if the chat is a group/supergroup (hides group-only commands in private).
+ * @param[out] out      Builder to append to (its prior contents are preserved).
+ *
+ * @return 0 on success, -ENOMEM on allocation failure.
+ * @ownership @p out is caller-owned; the text is valid until the next append/free.
+ * @thread_safety Safe (reads only the static table).
+ */
+int commands_render_help(role_t role, int is_group, strbuf_t *out);
+
+/**
+ * @brief Build the `setMyCommands` JSON payload from @ref cmd_table.
+ *
+ * Emits `{"commands":[{"command":...,"description":...},...]}` for every
+ * non-hidden command (SPEC-ADDENDUM-SSOT S2). Telegram limits each command name to
+ * 32 bytes and each description to 256, both guaranteed by the table test.
+ *
+ * @param[out] out    Output buffer.
+ * @param[in]  cap    Capacity of @p out.
+ * @param[out] outlen Receives the payload length (excluding NUL).
+ *
+ * @return 0 on success, -ENOSPC if @p out is too small, -EINVAL on bad arguments.
+ * @thread_safety Safe (reads only the static table).
+ */
+int commands_build_set_my_commands(char *out, size_t cap, size_t *outlen);
 
 #endif /* NM_COMMANDS_H */

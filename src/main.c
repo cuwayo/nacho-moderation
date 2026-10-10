@@ -15,16 +15,22 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "api_methods.h"
 #include "cli.h"
+#include "commands.h"
 #include "config.h"
 #include "metrics.h"
 #include "tables.h"
 #include "tables_json.h"
 #include "tg/api_pool.h"
+#include "tg/db.h"
 #include "tg/loop.h"
 #include "tg/net_conn.h"
+#include "tg/perms.h"
 #include "tg/polling.h"
+#include "tg/router.h"
 #include "tg/tg_api.h"
+#include "tg/tg_types.h"
 #include "tg/util.h"
 #include "tg/version.h"
 
@@ -118,20 +124,71 @@ static int pump_until_done(loop_t *loop, tg_api_t *api, const run_state_t *rs)
 }
 
 /**
- * @brief Poll getUpdates until a signal arrives (SPEC section 4.1).
+ * @brief Ignore an API result (fire-and-forget startup call such as setMyCommands).
  *
- * @param[in] loop Loop to run.
- * @param[in] api  API client to pump.
- * @param[in] cfg  Loaded configuration values.
+ * @param[in] res API result.
+ * @param[in] ctx Unused.
  */
-static void run_polling(loop_t *loop, tg_api_t *api, const config_values_t *cfg)
+static void on_ignore_api(const api_result_t *res, void *ctx)
+{
+    (void)ctx;
+    if (res->status != 0) {
+        util_log(LOG_DEBUG, "main", "background API call failed: %d", res->status);
+    }
+}
+
+/**
+ * @brief tg_updates_parse visitor that routes one update (adapter for the seam).
+ *
+ * @param[in] upd Parsed update.
+ * @param[in] ctx The @ref router_t.
+ *
+ * @return Always 0 (keep iterating the batch).
+ */
+static int route_update(const tg_update_t *upd, void *ctx)
+{
+    (void)router_handle(ctx, upd);
+    return 0;
+}
+
+/**
+ * @brief Router/poller batch callback: parse the batch and route every update.
+ *
+ * @param[in] batch Batch summary (carries the raw reply body).
+ * @param[in] ctx   The @ref router_t.
+ */
+static void on_batch(const poll_batch_t *batch, void *ctx)
+{
+    router_t *router = ctx;
+    if (batch->body == NULL || batch->count == 0) {
+        return;
+    }
+    /* tg_updates_parse keeps yyjson inside tg_types; the visitor routes each
+     * update through the permission engine. */
+    int rc = tg_updates_parse(batch->body, batch->body_len, route_update, router, NULL);
+    if (rc != 0) {
+        util_log(LOG_WARN, "main", "failed to parse update batch: %d", rc);
+    }
+}
+
+/**
+ * @brief Poll getUpdates until a signal arrives, routing updates (SPEC section 4.1).
+ *
+ * @param[in] loop   Loop to run.
+ * @param[in] api    API client to pump.
+ * @param[in] cfg    Loaded configuration values.
+ * @param[in] db     DB worker to pump.
+ * @param[in] router Router that consumes updates.
+ */
+static void run_polling(loop_t *loop, tg_api_t *api, const config_values_t *cfg, db_t *db,
+                        router_t *router)
 {
     poller_config_t pcfg = {
         .ops = tg_api_ops(api),
         .clock = &util_clock_ops_real,
         .timeout_s = (unsigned)config_get_int(cfg, CFG_POLLING_TIMEOUT),
-        .on_batch = NULL,
-        .ctx = NULL,
+        .on_batch = on_batch,
+        .ctx = router,
     };
     poller_t *poller = poller_create(&pcfg);
     if (poller == NULL) {
@@ -151,17 +208,114 @@ static void run_polling(loop_t *loop, tg_api_t *api, const config_values_t *cfg)
             metrics_dump(stderr);
         }
         tg_api_pump(api);
+        db_pump(db);
         int rc = loop_run_once(loop);
         if (rc < 0) {
             util_log(LOG_ERROR, "main", "loop error: %d", rc);
             break;
         }
     }
-    /* Shutdown: stop issuing polls and drop in-flight requests. Full drain of
-     * in-flight requests is completed in M7. */
+    /* Shutdown: stop issuing polls, then drop in-flight requests. Full drain of
+     * in-flight requests and DB jobs is completed in M7. */
     poller_stop(poller);
     poller_destroy(poller);
-    util_log(LOG_INFO, "main", "stopping (last offset=%lld)", (long long)0);
+    util_log(LOG_INFO, "main", "stopping");
+}
+
+/**
+ * @brief Probe the Bot API with getMe and return the parsed identity.
+ *
+ * @param[in]  loop Loop to run.
+ * @param[in]  api  API client.
+ * @param[out] me   Receives the bot identity on success.
+ *
+ * @return 0 on success, 1 if interrupted by a signal, 2 on a probe failure.
+ */
+static int probe_identity(loop_t *loop, tg_api_t *api, tg_me_t *me)
+{
+    run_state_t rs = {0};
+    int rc = tg_api_get_me(api, on_get_me, &rs);
+    if (rc != 0) {
+        return 2;
+    }
+    util_log(LOG_INFO, "main", "connecting to the Bot API");
+    (void)pump_until_done(loop, api, &rs);
+
+    if (rs.done && rs.status == 0) {
+        *me = rs.me;
+        (void)printf("getMe ok: id=%lld username=%s name=%s\n", (long long)me->id, me->username,
+                     me->first_name);
+        /* Flush so a parent reading our stdout sees the probe result even though we
+         * then poll indefinitely (stdout is block-buffered on a pipe). */
+        (void)fflush(stdout);
+        return 0;
+    }
+    return g_stop ? 1 : 2;
+}
+
+/**
+ * @brief Bring up the DB worker, permission engine and router, then poll.
+ *
+ * @param[in] loop Loop to run.
+ * @param[in] api  API client.
+ * @param[in] cfg  Loaded configuration values.
+ * @param[in] me   Bot identity from the getMe probe.
+ *
+ * @return Process exit code (0 success, 1 runtime error).
+ */
+static int run_services(loop_t *loop, tg_api_t *api, const config_values_t *cfg, const tg_me_t *me)
+{
+    db_config_t dcfg = {.path = config_get_str(cfg, CFG_DB_PATH)};
+    db_t *db = db_create(&dcfg);
+    if (db == NULL || db_arm(db, loop_ops(loop)) != 0) {
+        util_log(LOG_ERROR, "main", "failed to open the database");
+        db_destroy(db);
+        return 1;
+    }
+
+    int64_t sudo_ids[256];
+    size_t sudo_count = 0;
+    (void)config_get_i64_list(cfg, CFG_SUDO_IDS, sudo_ids, sizeof(sudo_ids) / sizeof(sudo_ids[0]),
+                              &sudo_count);
+    perms_config_t pcfg = {.clock = &util_clock_ops_real,
+                           .api = tg_api_ops(api),
+                           .bot_id = me->id,
+                           .sudo_ids = sudo_ids,
+                           .sudo_count = sudo_count};
+    perms_t *perms = perms_create(&pcfg);
+    if (perms == NULL) {
+        util_log(LOG_ERROR, "main", "failed to create the permission engine");
+        db_destroy(db);
+        return 1;
+    }
+
+    router_config_t rcfg = {.api = tg_api_ops(api),
+                            .db = db_ops(db),
+                            .perms = perms,
+                            .clock = &util_clock_ops_real,
+                            .bot_id = me->id,
+                            .bot_username = me->username};
+    router_t *router = router_create(&rcfg);
+    if (router == NULL) {
+        util_log(LOG_ERROR, "main", "failed to create the router");
+        perms_destroy(perms);
+        db_destroy(db);
+        return 1;
+    }
+
+    /* Register the command menu with Telegram (best effort). */
+    char smc[4096];
+    size_t smc_len = 0;
+    if (commands_build_set_my_commands(smc, sizeof(smc), &smc_len) == 0) {
+        (void)tg_api_request(api, METHOD_SET_MY_COMMANDS, smc, smc_len, 0, 0, on_ignore_api, NULL);
+    }
+
+    run_polling(loop, api, cfg, db, router);
+
+    router_destroy(router);
+    perms_destroy(perms);
+    db_destroy(db);
+    return 0;
 }
 
 /**
@@ -215,41 +369,23 @@ static int run_bot(const cli_options_t *opts)
         return 2;
     }
 
-    /* Probe with getMe: validates the token and logs the bot identity. */
-    run_state_t rs = {0};
-    rc = tg_api_get_me(api, on_get_me, &rs);
-    if (rc != 0) {
-        tg_api_destroy(api);
-        loop_destroy(loop);
-        (void)fprintf(stderr, "tgbot: failed to start getMe\n");
-        return 1;
-    }
-    util_log(LOG_INFO, "main", "connecting to %s", acfg.base_url);
-    (void)pump_until_done(loop, api, &rs);
-
-    if (rs.done && rs.status == 0) {
-        (void)printf("getMe ok: id=%lld username=%s name=%s\n", (long long)rs.me.id, rs.me.username,
-                     rs.me.first_name);
-        /* Flush so a parent process reading our stdout sees the probe result even
-         * though we then poll indefinitely (stdout is block-buffered on a pipe). */
-        (void)fflush(stdout);
-    } else if (g_stop) {
-        util_log(LOG_INFO, "main", "interrupted");
-        tg_api_destroy(api);
-        loop_destroy(loop);
-        return 1;
-    } else {
-        util_log(LOG_ERROR, "main", "getMe failed: %d", rs.status);
+    tg_me_t me = {0};
+    int probe = probe_identity(loop, api, &me);
+    if (probe != 0) {
+        if (probe == 1) {
+            util_log(LOG_INFO, "main", "interrupted");
+        } else {
+            util_log(LOG_ERROR, "main", "getMe probe failed");
+        }
         tg_api_destroy(api);
         loop_destroy(loop);
         return 1;
     }
 
-    run_polling(loop, api, &cfg);
-
+    int exit_code = run_services(loop, api, &cfg, &me);
     tg_api_destroy(api);
     loop_destroy(loop);
-    return 0;
+    return exit_code;
 }
 
 /** @brief Set to 1 by the self-test timer callback. */

@@ -66,4 +66,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - M2 consistency check C9: every `api_methods.def` method has a mock-server
   handler and a `docs/telegram-api-notes.md` row.
 
-[Unreleased]: https://example.invalid/nacho-moderator/commits/main
+### Added (M3)
+
+- M3: update parsing (`src/tg_types.c`) — bounded Update/Message/User/Chat structs
+  for `message`, `edited_message`, `callback_query`, `chat_member` and
+  `my_chat_member`, tolerating missing/null/extra fields and huge int64 ids.
+- M3: the SQLite worker thread (`src/db.c`): an MPSC job queue, prepared upserts,
+  a `schema_version`-driven migration creating the SPEC §6 schema, WAL pragmas, and
+  an eventfd handoff read through io_uring (`OP_EVENTFD`) with an injectable
+  `db_ops_t` seam.
+- M3: a TTL hash map (`src/cache.c`) with an injectable clock and bounded eviction.
+- M3: the permission model and per-chat administrator cache (`src/perms.c`):
+  role/right checks, sudo bypass, target guards, and a live `getChatAdministrators`
+  fetch cached for 10 minutes and invalidated on `chat_member` and `/reload`.
+- M3: the command router (`src/router.c`): `/command[@bot]` parsing, target
+  resolution (reply → numeric id), permission gating, and dispatch to the command
+  handler, with `users`/`chats` upserts on every message.
+- M3: a real `/help` reply rendered from the command table, plus the
+  `setMyCommands` payload registered at startup (`src/commands.c`, `src/cmd_help.c`).
+- M3: `poll_batch_t` now carries the raw reply body so the poller can hand updates
+  to the router, and `config_get_i64_list()` parses `sudo_ids`.
+- M3 API methods: `getChatAdministrators`, `sendMessage`, `setMyCommands` (each
+  with a mock-server handler and a docs row, C9).
+- M3 error class `PERM` for permission denials.
+- M3 tests: `test_tg_types`, `test_cache`, `test_db` (real temp SQLite), `test_perms`
+  (the A5.1 matrix), `test_router`, an updated `test_cmd_help`, and the
+  `fuzz_update_json` fuzz target; plus the `integration-router` end-to-end test.
+
+### Fixed
+
+- M1/M2 TLS: a request queued before the handshake completed (the API pool queues
+  it while the connection is still `CONNECTING`) was encrypted with `SSL_write()`
+  before the session existed. OpenSSL refused the bytes and retained nothing, so
+  the request was silently dropped and the loop then blocked forever in
+  `io_uring_wait_cqe` on every HTTPS request. `conn_send_request()` now buffers
+  the plaintext and `conn_pump()` encrypts and flushes it once the handshake
+  completes (`src/net_conn.c`); regression test
+  `test_tls_request_queued_before_handshake` added.
+- M3 router: commands in a **private chat** failed with `permission resolution
+  failed: 104` and were dropped. The router always called `getChatAdministrators`,
+  which Telegram rejects for private chats (`ok=false` → `ERR_TG_API`). It now
+  resolves the caller locally for private chats (plain member unless sudo) and only
+  fetches the admin list in groups; a failed lookup now replies that permissions
+  could not be verified instead of dropping the command silently
+  (`src/router.c`); regression test `test_private_chat_help_replies_without_admin_fetch`
+  added.
+
+[Unreleased]: https://github.com/cuwayo/nacho-moderation/commits/main

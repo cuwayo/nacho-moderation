@@ -68,6 +68,11 @@ add_library(
     src/metrics.c
     src/api_pool.c
     src/polling.c
+    src/tg_types.c
+    src/cache.c
+    src/db.c
+    src/perms.c
+    src/router.c
     src/tg_api.c
     src/commands.c
     src/config.c

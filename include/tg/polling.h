@@ -24,8 +24,10 @@
 
 /** @brief Long-poll result passed to the batch callback. */
 typedef struct {
-    unsigned count; /**< Updates received in this batch (0 for an empty reply). */
-    int64_t offset; /**< Offset used for the next poll. */
+    unsigned count;   /**< Updates received in this batch (0 for an empty reply). */
+    int64_t offset;   /**< Offset used for the next poll. */
+    const char *body; /**< Raw reply body (valid only during the callback). */
+    size_t body_len;  /**< Length of @p body in bytes. */
 } poll_batch_t;
 
 /** @brief Called after each successful poll with the batch summary. */

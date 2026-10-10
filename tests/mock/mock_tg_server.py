@@ -37,7 +37,19 @@ DEFAULT_ME = {
 
 # Every Bot API method this mock implements. Keep in sync with src/api_methods.def
 # (consistency check C9).
-HANDLERS = ["getMe", "getUpdates"]
+HANDLERS = ["getMe", "getUpdates", "getChatAdministrators", "sendMessage", "setMyCommands"]
+
+# A minimal administrator list returned by getChatAdministrators (the creator is
+# id 100, an admin with restrict rights is id 200).
+DEFAULT_ADMINS = [
+    {"status": "creator", "user": {"id": 100, "is_bot": False, "first_name": "Owner"}},
+    {
+        "status": "administrator",
+        "user": {"id": 200, "is_bot": False, "first_name": "Admin"},
+        "can_restrict_members": True,
+        "can_delete_messages": True,
+    },
+]
 
 # Paths look like /bot<token>/<method>.
 PATH_RE = re.compile(r"^/bot[^/]+/(?P<method>[A-Za-z]+)")
@@ -124,6 +136,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "result": DEFAULT_ME})
         elif api_method == "getUpdates":
             self._send_json(200, state.next_update_batch())
+        elif api_method == "getChatAdministrators":
+            self._send_json(200, {"ok": True, "result": DEFAULT_ADMINS})
+        elif api_method == "sendMessage":
+            self._send_json(200, {"ok": True, "result": {"message_id": 1}})
+        elif api_method == "setMyCommands":
+            self._send_json(200, {"ok": True, "result": True})
         else:
             self._send_json(200, {"ok": False, "description": f"unknown method {api_method}"})
 

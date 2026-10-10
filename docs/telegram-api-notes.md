@@ -10,6 +10,9 @@ the mock server lands), and the mock server must implement every method listed.
 |---|---|---|
 | `getMe` | global | yes |
 | `getUpdates` | global | yes |
+| `getChatAdministrators` | global | yes |
+| `sendMessage` | per-chat | no |
+| `setMyCommands` | global | yes |
 
 (Additional methods are added to `src/api_methods.def` as commands are implemented.)
 

@@ -150,7 +150,8 @@ static void poll_on_result(const api_result_t *res, void *ctx)
                 util_log(LOG_DEBUG, "poll", "received %u update(s), offset=%lld", count,
                          (long long)p->offset);
             }
-            poll_batch_t batch = {.count = count, .offset = p->offset};
+            poll_batch_t batch = {
+                .count = count, .offset = p->offset, .body = res->body, .body_len = res->body_len};
             if (p->cfg.on_batch != NULL) {
                 p->cfg.on_batch(&batch, p->cfg.ctx);
             }

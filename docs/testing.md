@@ -26,6 +26,12 @@ update id, and that `allowed_updates` is sent explicitly. The mock supports
 scenarios (`tests/mock/scenarios/*.json`) and fault injection (429, 5xx, malformed
 JSON, connection reset), and records every call as JSONL for assertions.
 
+M3 adds `tests/integration/test_integration_router.py`: the mock injects a scripted
+`/help` message; the test asserts the router resolves the caller via
+`getChatAdministrators` and replies with `sendMessage`, that `setMyCommands` is
+registered at startup, and that a non-command message produces no reply. It uses a
+real temporary SQLite file (`DB_PATH` in the test env).
+
 ## Fuzz tests
 
 libFuzzer harnesses under `tests/fuzz/`. CI runs each target for 60 s per PR and

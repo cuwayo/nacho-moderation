@@ -31,6 +31,9 @@ typedef enum {
     RIGHT_CHANGE_INFO /**< can_change_info. */
 } right_t;
 
+/** @brief Bitmask bit for a @ref right_t value (rights are held as an OR of these). */
+#define RIGHT_BIT(r) (1u << (unsigned)(r))
+
 /* Command flags (CMDF_*), OR-ed in the commands.def flags column. */
 #define CMDF_TARGET 0x01u         /**< Takes a target user argument. */
 #define CMDF_REPLY_REQUIRED 0x02u /**< Must be used as a reply to a message. */
