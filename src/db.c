@@ -39,10 +39,15 @@
 #define DB_SQL_ACTION                                                                              \
     "INSERT INTO actions(chat_id, user_id, admin_id, action, reason, created_at, expires_at) "     \
     "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)"
-/** @brief Select due, un-lifted expiring actions (SPEC section 5.6). */
+/** @brief Select due, un-lifted expiring actions (SPEC section 5.6).
+ *
+ * A permanent action stores `expires_at` as NULL (the insert binds NULL when the
+ * caller passes 0), so `expires_at > 0` excludes it. The extra `> 0` guard also
+ * ignores any legacy row written with `expires_at = 0`, which would otherwise look
+ * due on every sweep. */
 #define DB_SQL_EXPIRE                                                                              \
     "SELECT id, chat_id, user_id, action FROM actions "                                            \
-    "WHERE lifted=0 AND expires_at IS NOT NULL AND expires_at<=?1 LIMIT ?2"
+    "WHERE lifted=0 AND expires_at IS NOT NULL AND expires_at > 0 AND expires_at<=?1 LIMIT ?2"
 /** @brief Mark one action row as lifted. */
 #define DB_SQL_LIFT "UPDATE actions SET lifted=1 WHERE id=?1"
 /** @brief Resolve a username (case-insensitive) to a user id. */
@@ -301,7 +306,13 @@ static int worker_execute(db_stmts_t *st, const db_job_t *job, db_result_t *res)
         sqlite3_bind_text(s, 4, job->action, -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(s, 5, job->reason, -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(s, 6, job->created_at);
-        sqlite3_bind_int64(s, 7, job->expires_at);
+        /* A permanent action (expires_at <= 0) stores NULL, matching the SPEC
+         * section 6 schema and keeping it out of the expiry index/query. */
+        if (job->expires_at > 0) {
+            sqlite3_bind_int64(s, 7, job->expires_at);
+        } else {
+            sqlite3_bind_null(s, 7);
+        }
         return step_done(s);
     }
     case DB_JOB_LIFT_ACTION: {

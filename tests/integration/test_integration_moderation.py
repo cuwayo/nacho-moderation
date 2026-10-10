@@ -170,6 +170,21 @@ class ModerationIntegrationTest(unittest.TestCase):
         # is deleted in one batch — independent of what the bot observed.
         self.assertEqual(call["json"]["message_ids"], [1, 2, 3, 4, 5, 6])
 
+    def test_username_resolves_from_admin_list(self) -> None:
+        """An @username target that never posted resolves from getChatAdministrators.
+
+        The target (@admin, id 200) sends no message, so the only source of its id
+        is the administrator list the router already fetched for permissions.
+        """
+        proc, log = self._start("unban_admin_username.json")
+        ok = self._wait_for(
+            log, lambda calls: any(c["method"] == "unbanChatMember" for c in calls)
+        )
+        self._stop(proc)
+        self.assertTrue(ok, msg=f"no unbanChatMember; calls: {read_calls(log)}")
+        call = next(c for c in read_calls(log) if c["method"] == "unbanChatMember")
+        self.assertEqual(call["json"]["user_id"], 200)
+
 
 if __name__ == "__main__":
     unittest.main()

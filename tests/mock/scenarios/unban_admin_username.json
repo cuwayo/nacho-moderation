@@ -1,0 +1,18 @@
+{
+  "_comment": "An admin (the creator, id 100) runs /unban @admin. The target @admin (id 200) never posted a message, so the only way the username resolves is by seeding the users cache from the getChatAdministrators response, which carries each admin's username. /unban has no target guard, so it proceeds and issues unbanChatMember for id 200.",
+  "updates": [
+    [
+      {
+        "update_id": 1,
+        "message": {
+          "message_id": 11,
+          "date": 1700000000,
+          "from": {"id": 100, "is_bot": false, "first_name": "Owner", "username": "owner"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "/unban @admin"
+        }
+      }
+    ],
+    []
+  ]
+}

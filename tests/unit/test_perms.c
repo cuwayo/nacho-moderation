@@ -209,12 +209,49 @@ static void on_subject(const perms_subject_t *subject, int status, void *ctx)
     }
 }
 
+/** @brief Copy an admin list into a caller-provided buffer. */
+static void capture_admins(const perms_admins_t *admins, int status, void *ctx)
+{
+    perms_admins_t *out = ctx;
+    if (status == 0 && admins != NULL) {
+        *out = *admins;
+    }
+}
+
 static const char *ADMINS_JSON =
     "{\"ok\":true,\"result\":["
-    "{\"status\":\"creator\",\"user\":{\"id\":1,\"is_bot\":false,\"first_name\":\"Own\"}},"
-    "{\"status\":\"administrator\",\"user\":{\"id\":2,\"first_name\":\"Adm\"},"
+    "{\"status\":\"creator\",\"user\":{\"id\":1,\"is_bot\":false,\"first_name\":\"Own\","
+    "\"username\":\"owner\"}},"
+    "{\"status\":\"administrator\",\"user\":{\"id\":2,\"first_name\":\"Adm\","
+    "\"username\":\"admin\"},"
     "\"can_restrict_members\":true,\"can_delete_messages\":false},"
     "{\"status\":\"administrator\",\"user\":{\"id\":3,\"first_name\":\"NoRights\"}}]}";
+
+static void test_admin_fetch_captures_username(void **state)
+{
+    (void)state;
+    uint64_t now = 0;
+    clock_ops_t clock = {.now_ms = fake_now_ms, .ctx = &now};
+    fake_api_t f = {0};
+    tg_api_ops_t ops = {.request = fake_request, .ctx = &f};
+    perms_config_t cfg = {.clock = &clock, .api = &ops, .bot_id = 999};
+    perms_t *p = perms_create(&cfg);
+    assert_non_null(p);
+
+    /* A getChatAdministrators result carries each admin's username and name; the
+     * router seeds the users cache from these so @username targets resolve. */
+    perms_admins_t captured = {0};
+    assert_int_equal(perms_admins_get(p, -100, capture_admins, &captured), 0);
+    f.result = (api_result_t){.status = 0, .body = ADMINS_JSON, .body_len = strlen(ADMINS_JSON)};
+    fake_deliver(&f);
+    assert_int_equal(captured.count, 3);
+    assert_string_equal(captured.admins[0].username, "owner");
+    assert_string_equal(captured.admins[0].first_name, "Own");
+    assert_string_equal(captured.admins[1].username, "admin");
+    assert_string_equal(captured.admins[2].username, ""); /* no username in the fixture */
+
+    perms_destroy(p);
+}
 
 static void test_admin_fetch_then_cache_hit(void **state)
 {
@@ -439,6 +476,7 @@ int main(void)
         cmocka_unit_test(test_target_rules),
         cmocka_unit_test(test_null_command_allowed),
         cmocka_unit_test(test_owner_and_sudo_min_role),
+        cmocka_unit_test(test_admin_fetch_captures_username),
         cmocka_unit_test(test_admin_fetch_then_cache_hit),
         cmocka_unit_test(test_invalidate_forces_refetch),
         cmocka_unit_test(test_fetch_failure_reports_status),

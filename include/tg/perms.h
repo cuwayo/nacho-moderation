@@ -44,9 +44,11 @@ typedef struct {
 
 /** @brief One administrator cached for a chat. */
 typedef struct {
-    int64_t user_id; /**< Administrator user id. */
-    role_t role;     /**< ROLE_OWNER for the creator, else ROLE_ADMIN. */
-    unsigned rights; /**< Bitmask of RIGHT_BIT(right_t) the admin holds. */
+    int64_t user_id;      /**< Administrator user id. */
+    role_t role;          /**< ROLE_OWNER for the creator, else ROLE_ADMIN. */
+    unsigned rights;      /**< Bitmask of RIGHT_BIT(right_t) the admin holds. */
+    char username[64];    /**< Username without the leading at-sign ("" if none). */
+    char first_name[128]; /**< First name (for display and `users` seeding). */
 } perms_admin_t;
 
 /** @brief Cached administrators of one chat. */

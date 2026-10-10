@@ -151,5 +151,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the bot observed (`src/cmd_msg.c`); the now-unused router ring was removed, and
   `test_purge_covers_reply_to_command_range` / `test_purge_caps_at_max_ids` plus the
   `purge_range` integration scenario were added.
+- M4 expiry: a **permanent** action was stored with `expires_at = 0`, which the sweep
+  query (`expires_at IS NOT NULL AND expires_at <= now`) treated as already due. Every
+  sweep therefore "lifted" every permanent action — log spam for `/purge`/`/del`, and,
+  worse, a permanent `/ban` was silently undone within 30 s. The insert now stores
+  `NULL` for a permanent action and the query additionally requires `expires_at > 0`
+  (`src/db.c`); regression test `test_permanent_action_is_never_swept` added.
+- M4 `@username` targets were unresolvable unless the user had spoken since the bot
+  started, and even then the admin list's own usernames were discarded. The router now
+  resolves `@username` against the administrator list it already fetched (in memory)
+  and seeds the `users` cache from it, and also upserts the replied-to message's
+  sender; the "unknown username" reply now suggests replying or using a numeric id
+  (`src/router.c`, `src/perms.c`); `test_admin_fetch_captures_username` and the
+  `unban_admin_username` integration scenario added.
 
 [Unreleased]: https://github.com/cuwayo/nacho-moderation/commits/main

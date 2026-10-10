@@ -57,10 +57,13 @@ HANDLERS = [
 # 123456789 — a real bot must be an administrator to moderate, so the list
 # includes it with the rights the moderation commands need).
 DEFAULT_ADMINS = [
-    {"status": "creator", "user": {"id": 100, "is_bot": False, "first_name": "Owner"}},
+    {
+        "status": "creator",
+        "user": {"id": 100, "is_bot": False, "first_name": "Owner", "username": "owner"},
+    },
     {
         "status": "administrator",
-        "user": {"id": 200, "is_bot": False, "first_name": "Admin"},
+        "user": {"id": 200, "is_bot": False, "first_name": "Admin", "username": "admin"},
         "can_restrict_members": True,
         "can_delete_messages": True,
         "can_pin_messages": True,

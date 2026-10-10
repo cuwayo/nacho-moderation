@@ -157,6 +157,48 @@ static unsigned parse_member_rights(yyjson_val *member, role_t *role)
 }
 
 /**
+ * @brief Copy a JSON string member of @p obj into a fixed buffer.
+ *
+ * @param[out] dst Destination buffer.
+ * @param[in]  cap Capacity of @p dst.
+ * @param[in]  obj JSON object.
+ * @param[in]  key Member name.
+ */
+static void copy_member_str(char *dst, size_t cap, yyjson_val *obj, const char *key)
+{
+    yyjson_val *v = yyjson_obj_get(obj, key);
+    if (v != NULL && yyjson_is_str(v)) {
+        (void)snprintf(dst, cap, "%s", yyjson_get_str(v));
+    }
+}
+
+/**
+ * @brief Parse one ChatMember entry into @p a.
+ *
+ * @param[in]  item JSON ChatMember object.
+ * @param[out] a    Receives the parsed administrator.
+ *
+ * @return 0 if @p item yielded an administrator, -EINVAL if it was malformed.
+ */
+static int parse_admin_entry(yyjson_val *item, perms_admin_t *a)
+{
+    yyjson_val *user = yyjson_obj_get(item, "user");
+    if (user == NULL || !yyjson_is_obj(user)) {
+        return -EINVAL;
+    }
+    yyjson_val *id = yyjson_obj_get(user, "id");
+    if (id == NULL || !yyjson_is_int(id)) {
+        return -EINVAL;
+    }
+    memset(a, 0, sizeof(*a));
+    a->user_id = (int64_t)yyjson_get_sint(id);
+    a->rights = parse_member_rights(item, &a->role);
+    copy_member_str(a->username, sizeof(a->username), user, "username");
+    copy_member_str(a->first_name, sizeof(a->first_name), user, "first_name");
+    return 0;
+}
+
+/**
  * @brief Parse a getChatAdministrators result array into @p out.
  *
  * @param[in]  json Reply body.
@@ -188,18 +230,9 @@ static int parse_admins(const char *json, size_t len, perms_admins_t *out)
         if (out->count >= PERMS_MAX_ADMINS) {
             break;
         }
-        yyjson_val *user = yyjson_obj_get(item, "user");
-        if (user == NULL || !yyjson_is_obj(user)) {
-            continue;
+        if (parse_admin_entry(item, &out->admins[out->count]) == 0) {
+            out->count++;
         }
-        yyjson_val *id = yyjson_obj_get(user, "id");
-        if (id == NULL || !yyjson_is_int(id)) {
-            continue;
-        }
-        perms_admin_t *a = &out->admins[out->count];
-        a->user_id = (int64_t)yyjson_get_sint(id);
-        a->rights = parse_member_rights(item, &a->role);
-        out->count++;
     }
     yyjson_doc_free(doc);
     return 0;

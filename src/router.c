@@ -210,6 +210,16 @@ static void upsert_message(router_t *r, const tg_message_t *msg)
         (void)snprintf(job.first_name, sizeof(job.first_name), "%s", msg->from.first_name);
         (void)r->cfg.db->submit(r->cfg.db->ctx, &job, on_upsert, NULL);
     }
+    /* Also remember the replied-to message's sender: the bot learns a user's id
+     * from any message it can see, including the one being replied to, which makes
+     * `@username` targets resolvable even before that user speaks directly. */
+    if (msg->has_reply && msg->reply_from.id != 0 && msg->reply_from.id != msg->from.id) {
+        db_job_t job = {
+            .kind = DB_JOB_UPSERT_USER, .id = msg->reply_from.id, .last_seen = msg->date};
+        (void)snprintf(job.username, sizeof(job.username), "%s", msg->reply_from.username);
+        (void)snprintf(job.first_name, sizeof(job.first_name), "%s", msg->reply_from.first_name);
+        (void)r->cfg.db->submit(r->cfg.db->ctx, &job, on_upsert, NULL);
+    }
     if (msg->chat.id != 0) {
         db_job_t job = {.kind = DB_JOB_UPSERT_CHAT, .id = msg->chat.id};
         (void)snprintf(job.title, sizeof(job.title), "%s", msg->chat.title);
@@ -218,19 +228,42 @@ static void upsert_message(router_t *r, const tg_message_t *msg)
     }
 }
 
+/**
+ * @brief Seed the `users` cache from an administrator list (fire and forget).
+ *
+ * `getChatAdministrators` already carries each admin's username and name, so the
+ * bot can resolve `@username` targets for admins without waiting for them to
+ * speak. Only users with a username are stored (a username is the lookup key).
+ *
+ * @param[in] r      Router.
+ * @param[in] admins Administrator list (may be NULL).
+ */
+static void seed_admins(router_t *r, const perms_admins_t *admins)
+{
+    if (admins == NULL || r->cfg.db == NULL || r->cfg.db->submit == NULL) {
+        return;
+    }
+    for (unsigned i = 0; i < admins->count; ++i) {
+        const perms_admin_t *a = &admins->admins[i];
+        if (a->user_id == 0 || a->username[0] == '\0') {
+            continue;
+        }
+        db_job_t job = {.kind = DB_JOB_UPSERT_USER, .id = a->user_id};
+        (void)snprintf(job.username, sizeof(job.username), "%s", a->username);
+        (void)snprintf(job.first_name, sizeof(job.first_name), "%s", a->first_name);
+        (void)r->cfg.db->submit(r->cfg.db->ctx, &job, on_upsert, NULL);
+    }
+}
+
 /* --- Dispatch -------------------------------------------------------------- */
 
 /** @brief Context for the asynchronous dispatch chain. */
 typedef struct dispatch {
-    router_t *router;                 /**< Router. */
-    cmd_call_t *call;                 /**< Reference-counted invocation. */
-    cmd_invocation_t inv;             /**< Parsed invocation. */
-    int is_group;                     /**< 1 if the chat is a group/supergroup. */
-    char username[ROUTER_TARGET_MAX]; /**< The \@username without the leading '@'. */
+    router_t *router;     /**< Router. */
+    cmd_call_t *call;     /**< Reference-counted invocation. */
+    cmd_invocation_t inv; /**< Parsed invocation. */
+    int is_group;         /**< 1 if the chat is a group/supergroup. */
 } dispatch_t;
-
-/** @brief Resolve the admin list (if a group) and dispatch (defined below). */
-static void dispatch_with_admins(dispatch_t *d);
 
 /**
  * @brief Fill the invocation's role-derived fields and run the command handler.
@@ -250,6 +283,9 @@ static void run_handler(dispatch_t *d, const perms_admins_t *admins)
 
     perms_subject_t subject;
     (void)perms_subject_from_admins(d->router->cfg.perms, admins, ctx->user_id, &subject);
+
+    /* Seed the username cache from the admin list the fetch already returned. */
+    seed_admins(d->router, admins);
 
     ctx->cmd = cmd;
     ctx->chat_id = msg->chat.id;
@@ -327,7 +363,161 @@ static void dispatch_subject(dispatch_t *d, const perms_admins_t *admins)
 }
 
 /**
- * @brief \@username-lookup completion: set the target, then dispatch.
+ * @brief Release the router's reference to the invocation and free the dispatch.
+ *
+ * Called on every terminal dispatch path (a reply was sent, the handler ran, or
+ * the command was denied); the invocation itself is freed once its in-flight
+ * requests also release their references.
+ *
+ * @param[in] d Dispatch context.
+ */
+static void finish_dispatch(dispatch_t *d)
+{
+    cmd_call_release(d->call);
+    free(d);
+}
+
+/**
+ * @brief Start the admin fetch (group) or dispatch with no list (private chat).
+ *
+ * @param[in] d Dispatch context.
+ */
+static void dispatch_with_admins(dispatch_t *d);
+
+/** @brief \@username-lookup completion (defined below). */
+static void on_username_resolved(const db_result_t *res, void *user);
+
+/**
+ * @brief Look up an \@username in an administrator list (case-insensitive).
+ *
+ * Lets `@username` targets resolve immediately for anyone in the admin list the
+ * fetch already returned, without waiting for the users-cache write to land.
+ *
+ * @param[in] admins   Administrator list (may be NULL).
+ * @param[in] username Username without the leading '@'.
+ *
+ * @return The matching user id, or 0 if not found.
+ */
+static int64_t username_in_admins(const perms_admins_t *admins, const char *username)
+{
+    if (admins == NULL) {
+        return 0;
+    }
+    for (unsigned i = 0; i < admins->count; ++i) {
+        if (admins->admins[i].username[0] != '\0' &&
+            strcasecmp(admins->admins[i].username, username) == 0) {
+            return admins->admins[i].user_id;
+        }
+    }
+    return 0;
+}
+
+/**
+ * @brief Resolve the target (seeding the username cache first), then dispatch.
+ *
+ * Runs after the administrator list is known, so `@username` targets can be
+ * resolved from admins the fetch already named. A reply-to or numeric target is
+ * set synchronously; an `@username` is first matched against the admin list in
+ * memory, then looked up in the users cache (DB), re-entering
+ * @ref dispatch_with_admins when it completes.
+ *
+ * @param[in] d      Dispatch context.
+ * @param[in] admins Administrator list (may be NULL for private chats).
+ */
+static void dispatch_after_admins(dispatch_t *d, const perms_admins_t *admins)
+{
+    struct cmd_ctx *ctx = cmd_call_ctx(d->call);
+    const tg_message_t *copy = cmd_call_message(d->call);
+
+    /* Seed the users cache from the admin list for later commands. */
+    seed_admins(d->router, admins);
+
+    /* A previous pass may already have resolved the target (an \@username DB
+     * lookup sets ctx->target_id and re-enters here); do not resolve again. */
+    if (ctx->target_id != 0) {
+        dispatch_subject(d, admins);
+        finish_dispatch(d);
+        return;
+    }
+
+    int64_t target = 0;
+    int resolved = router_resolve_target(&d->inv, copy, &target);
+    if (resolved == 0) {
+        ctx->target_id = target;
+        dispatch_subject(d, admins);
+        finish_dispatch(d);
+        return;
+    }
+    if (resolved != -ENOTSUP) {
+        dispatch_subject(d, admins); /* no target: the handler reports it */
+        finish_dispatch(d);
+        return;
+    }
+
+    /* An \@username: resolve against the admin list first (no DB round-trip), then
+     * fall back to the users cache. */
+    const char *uname = d->inv.target + 1;
+    int64_t admin_id = username_in_admins(admins, uname);
+    if (admin_id != 0) {
+        ctx->target_id = admin_id;
+        dispatch_subject(d, admins);
+        finish_dispatch(d);
+        return;
+    }
+    if (d->router->cfg.db == NULL || d->router->cfg.db->submit == NULL) {
+        (void)cmd_ctx_reply_plain(ctx, copy->message_id, "I cannot resolve usernames right now.");
+        finish_dispatch(d);
+        return;
+    }
+    db_job_t job = {.kind = DB_JOB_FIND_USER_BY_USERNAME};
+    (void)snprintf(job.username, sizeof(job.username), "%s", uname);
+    if (d->router->cfg.db->submit(d->router->cfg.db->ctx, &job, on_username_resolved, d) != 0) {
+        finish_dispatch(d);
+    }
+}
+
+/**
+ * @brief Admin-fetch completion: seed and dispatch, or report the failure.
+ *
+ * @param[in] admins Administrator list (NULL on failure).
+ * @param[in] status Fetch status.
+ * @param[in] user   The @ref dispatch_t.
+ */
+static void on_admins(const perms_admins_t *admins, int status, void *user)
+{
+    dispatch_t *d = user;
+    if (status != 0) {
+        struct cmd_ctx *ctx = cmd_call_ctx(d->call);
+        util_log(LOG_WARN, "router", "permission check failed: %d", status);
+        (void)cmd_ctx_reply_plain(ctx, ctx->msg != NULL ? ctx->msg->message_id : 0,
+                                  "I could not verify permissions in this chat; please try again.");
+        finish_dispatch(d);
+        return;
+    }
+    dispatch_after_admins(d, admins);
+}
+
+/**
+ * @brief Start the admin fetch (group) or dispatch with no list (private chat).
+ *
+ * @param[in] d Dispatch context.
+ */
+static void dispatch_with_admins(dispatch_t *d)
+{
+    struct cmd_ctx *ctx = cmd_call_ctx(d->call);
+    if (d->router->cfg.perms == NULL || !d->is_group) {
+        dispatch_after_admins(d, NULL);
+        return;
+    }
+    if (perms_admins_get(d->router->cfg.perms, ctx->chat_id, on_admins, d) != 0) {
+        (void)cmd_ctx_reply_plain(ctx, ctx->msg != NULL ? ctx->msg->message_id : 0,
+                                  "I could not verify permissions in this chat; please try again.");
+        finish_dispatch(d);
+    }
+}
+
+/**
+ * @brief \@username-lookup completion: set the target and re-dispatch.
  *
  * @param[in] res DB result (its @c i64 is the resolved user id, 0 if unknown).
  * @param[in] user The @ref dispatch_t.
@@ -338,103 +528,18 @@ static void on_username_resolved(const db_result_t *res, void *user)
     struct cmd_ctx *ctx = cmd_call_ctx(d->call);
     if (res->status == 0 && res->i64 != 0) {
         ctx->target_id = res->i64;
-    } else if (res->status == 0) {
-        (void)cmd_ctx_reply_plain(ctx, ctx->msg != NULL ? ctx->msg->message_id : 0,
-                                  "I do not know that username; ask them to speak first.");
-        cmd_call_release(d->call);
-        free(d);
+        /* Re-run the dispatch; the admin list is now a cache hit, and the target
+         * resolves synchronously the second time. */
+        dispatch_with_admins(d);
         return;
     }
-    dispatch_with_admins(d);
-}
-
-/**
- * @brief Admin-fetch completion: dispatch, then release the call reference.
- *
- * @param[in] admins Administrator list (NULL on failure).
- * @param[in] status Fetch status.
- * @param[in] user   The @ref dispatch_t.
- */
-static void on_admins(const perms_admins_t *admins, int status, void *user)
-{
-    dispatch_t *d = user;
-    struct cmd_ctx *ctx = cmd_call_ctx(d->call);
-    if (status != 0) {
-        util_log(LOG_WARN, "router", "permission check failed: %d", status);
-        (void)cmd_ctx_reply_plain(ctx, ctx->msg != NULL ? ctx->msg->message_id : 0,
-                                  "I could not verify permissions in this chat; please try again.");
-    } else {
-        dispatch_subject(d, admins);
+    if (res->status == 0) {
+        (void)cmd_ctx_reply_plain(
+            ctx, ctx->msg != NULL ? ctx->msg->message_id : 0,
+            "I do not know that username yet. Reply to one of their messages, or use their "
+            "numeric user id.");
     }
-    cmd_call_release(d->call);
-    free(d);
-}
-
-/**
- * @brief Start the admin fetch (group) or dispatch immediately (private chat).
- *
- * @param[in] d Dispatch context.
- */
-static void dispatch_with_admins(dispatch_t *d)
-{
-    struct cmd_ctx *ctx = cmd_call_ctx(d->call);
-    if (d->router->cfg.perms == NULL || !d->is_group) {
-        dispatch_subject(d, NULL);
-        cmd_call_release(d->call);
-        free(d);
-        return;
-    }
-    int rc = perms_admins_get(d->router->cfg.perms, ctx->chat_id, on_admins, d);
-    if (rc != 0) {
-        (void)cmd_ctx_reply_plain(ctx, ctx->msg != NULL ? ctx->msg->message_id : 0,
-                                  "I could not verify permissions in this chat; please try again.");
-        cmd_call_release(d->call);
-        free(d);
-    }
-}
-
-/**
- * @brief Resolve the dispatch target, starting an \@username lookup when needed.
- *
- * Reply-to and numeric targets are set synchronously. An \@username needs a DB
- * lookup, which is submitted here; the dispatch continues in
- * @c on_username_resolved. On success the caller must not dispatch again.
- *
- * @param[in] d Dispatch context (target fields filled in place).
- *
- * @return 0 if the caller should continue dispatching, 1 if an asynchronous
- *         lookup was started (or a reply was sent), negative errno on failure.
- */
-static int resolve_dispatch_target(dispatch_t *d)
-{
-    struct cmd_ctx *ctx = cmd_call_ctx(d->call);
-    const tg_message_t *copy = cmd_call_message(d->call);
-    int64_t target = 0;
-    int resolved = router_resolve_target(&d->inv, copy, &target);
-    if (resolved == 0) {
-        ctx->target_id = target;
-        return 0;
-    }
-    if (resolved != -ENOTSUP) {
-        return 0; /* no target: handlers report it themselves */
-    }
-    /* An \@username: look it up through the DB, then continue asynchronously. */
-    (void)snprintf(d->username, sizeof(d->username), "%s", d->inv.target + 1);
-    if (d->router->cfg.db == NULL || d->router->cfg.db->submit == NULL) {
-        (void)cmd_ctx_reply_plain(ctx, copy->message_id, "I cannot resolve usernames right now.");
-        /* Terminal: no lookup will run, so release the router's reference here (the
-         * reply request keeps the invocation alive until its callback). */
-        cmd_call_release(d->call);
-        free(d);
-        return 1;
-    }
-    db_job_t job = {.kind = DB_JOB_FIND_USER_BY_USERNAME};
-    (void)snprintf(job.username, sizeof(job.username), "%s", d->username);
-    int rc = d->router->cfg.db->submit(d->router->cfg.db->ctx, &job, on_username_resolved, d);
-    if (rc != 0) {
-        return rc;
-    }
-    return 1;
+    finish_dispatch(d);
 }
 
 /**
@@ -496,17 +601,8 @@ static int handle_message(router_t *r, const tg_update_t *upd)
     ctx->args = d->inv.args;
     ctx->wall = r->cfg.wall;
 
-    /* Resolve the target: reply-to wins, then numeric id, then \@username. */
-    int trc = resolve_dispatch_target(d);
-    if (trc != 0) {
-        if (trc < 0) {
-            cmd_call_release(call);
-            free(d);
-            return trc;
-        }
-        return 0; /* an asynchronous lookup owns the dispatch now */
-    }
-
+    /* Resolve the target and dispatch. Target resolution (including the \@username
+     * DB lookup) runs after the admin fetch so the users cache is seeded first. */
     dispatch_with_admins(d);
     return 0;
 }
