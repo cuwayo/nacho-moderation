@@ -39,9 +39,6 @@ typedef struct cmd_call cmd_call_t;
 /** @brief Maximum length of a target's display label (name, \@username or id). */
 #define CMD_TARGET_LABEL_MAX 128u
 
-/** @brief Maximum number of recent message ids a /purge invocation may collect. */
-#define CMD_RECENT_MAX 512u
-
 /** @brief Everything a command handler needs for one invocation. */
 struct cmd_ctx {
     const cmd_desc_t *cmd;    /**< The command being run (never NULL). */
@@ -57,17 +54,6 @@ struct cmd_ctx {
     role_t role;              /**< Caller's resolved role in the chat. */
     int is_sudo;              /**< 1 if the caller is a configured sudo user. */
     int bot_has_right;        /**< 1 if the bot holds @c cmd->bot_right in the chat. */
-
-    /**
-     * @brief Recent message ids in the chat, oldest first.
-     *
-     * A bounded ring the router maintains per chat. The last entry is the id of
-     * the command message itself, so `/purge` can collect every id from a
-     * replied-to message up to the command. Valid only for the duration of the
-     * handler call; copy what must outlive it.
-     */
-    const int64_t *recent_ids;
-    size_t recent_count; /**< Number of entries in @ref recent_ids. */
 
     const wall_clock_ops_t *wall; /**< Wall clock for `until_date` / `expires_at`. */
 
@@ -143,18 +129,6 @@ struct cmd_ctx *cmd_call_ctx(cmd_call_t *call);
  * @thread_safety Loop thread only.
  */
 tg_message_t *cmd_call_message(cmd_call_t *call);
-
-/**
- * @brief Copy up to @p count recent message ids into @p call (for /purge).
- *
- * @param[in] call  Invocation.
- * @param[in] ids   Source ids, oldest first (may be NULL when @p count is 0).
- * @param[in] count Number of ids.
- *
- * @return 0 on success, -ENOMEM if the ring cannot hold @p count.
- * @thread_safety Loop thread only.
- */
-int cmd_call_set_recent(cmd_call_t *call, const int64_t *ids, size_t count);
 
 /**
  * @brief Copy a display label for the resolved target into @p call.

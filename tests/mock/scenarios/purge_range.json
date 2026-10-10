@@ -1,0 +1,14 @@
+{
+  "_comment": "Five plain messages in a supergroup, then /purge from an admin replying to the first. The router records each message id in its recent ring, so /purge must issue one deleteMessages call covering ids 1..6.",
+  "updates": [
+    [
+      {"update_id": 1, "message": {"message_id": 1, "date": 1700000000, "from": {"id": 300, "is_bot": false, "first_name": "Spammer", "username": "spammer"}, "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"}, "text": "one"}},
+      {"update_id": 2, "message": {"message_id": 2, "date": 1700000001, "from": {"id": 300, "is_bot": false, "first_name": "Spammer", "username": "spammer"}, "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"}, "text": "two"}},
+      {"update_id": 3, "message": {"message_id": 3, "date": 1700000002, "from": {"id": 300, "is_bot": false, "first_name": "Spammer", "username": "spammer"}, "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"}, "text": "three"}},
+      {"update_id": 4, "message": {"message_id": 4, "date": 1700000003, "from": {"id": 300, "is_bot": false, "first_name": "Spammer", "username": "spammer"}, "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"}, "text": "four"}},
+      {"update_id": 5, "message": {"message_id": 5, "date": 1700000004, "from": {"id": 300, "is_bot": false, "first_name": "Spammer", "username": "spammer"}, "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"}, "text": "five"}},
+      {"update_id": 6, "message": {"message_id": 6, "date": 1700000005, "from": {"id": 200, "is_bot": false, "first_name": "Admin", "username": "admin"}, "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"}, "text": "/purge", "reply_to_message": {"message_id": 1, "from": {"id": 300, "is_bot": false, "first_name": "Spammer", "username": "spammer"}}}}
+    ],
+    []
+  ]
+}

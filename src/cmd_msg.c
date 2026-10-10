@@ -182,41 +182,37 @@ static int purge_batch(struct cmd_ctx *ctx, const int64_t *ids, size_t count)
 }
 
 /**
- * @brief Collect the message ids a /purge should delete, oldest first.
+ * @brief Fill @p ids with the message-id range a /purge should delete.
  *
- * Every recent id in `[reply_to_message_id, message_id]` is included, and the
- * replied-to message and the command are appended if the ring did not contain
- * them, so /purge always removes its own trigger.
+ * Telegram message ids are assigned sequentially per chat, so the range
+ * `[reply_to_message_id, message_id]` names exactly the messages from the
+ * replied-to one up to and including the command. Enumerating the range (rather
+ * than relying on the ids the bot happened to observe) means /purge works for
+ * messages sent before the bot started or while it was restarted. If the range
+ * exceeds @p cap, the newest @p cap ids are kept.
  *
- * @param[in]  ctx   Context.
- * @param[out] ids   Destination array (capacity @ref PURGE_MAX_IDS).
- * @param[in]  cap   Capacity of @p ids.
+ * @param[in]  ctx Context.
+ * @param[out] ids Destination array (oldest first).
+ * @param[in]  cap Capacity of @p ids.
  *
- * @return The number of ids collected.
+ * @return The number of ids written.
  */
 static size_t purge_collect_ids(const struct cmd_ctx *ctx, int64_t *ids, size_t cap)
 {
     int64_t lo = ctx->msg->reply_to_message_id;
     int64_t hi = ctx->msg->message_id;
-    size_t count = 0;
-    int have_lo = 0;
-    int have_hi = 0;
-    for (size_t i = 0; i < ctx->recent_count && count < cap; ++i) {
-        int64_t id = ctx->recent_ids[i];
-        if (id < lo || id > hi) {
-            continue;
-        }
-        ids[count++] = id;
-        have_lo = have_lo || id == lo;
-        have_hi = have_hi || id == hi;
+    if (hi < lo) {
+        return 0; /* malformed: the reply is "after" the command */
     }
-    if (!have_lo && count < cap) {
-        ids[count++] = lo;
+    int64_t span = hi - lo + 1;
+    if (span > (int64_t)cap) {
+        lo = hi - (int64_t)cap + 1; /* keep the newest cap ids */
+        span = (int64_t)cap;
     }
-    if (!have_hi && count < cap) {
-        ids[count++] = hi;
+    for (int64_t i = 0; i < span; ++i) {
+        ids[(size_t)i] = lo + i;
     }
-    return count;
+    return (size_t)span;
 }
 
 /**
@@ -236,9 +232,10 @@ int cmd_purge(struct cmd_ctx *ctx)
         return 0;
     }
 
-    /* The router supplies the per-chat recent-id ring; the command id itself is
-     * always included so /purge also removes its own trigger. */
-    int64_t ids[PURGE_MAX_IDS];
+    /* Telegram message ids are sequential per chat, so the range from the
+     * replied-to message to the command names exactly what to delete; the command
+     * id is included so /purge also removes its own trigger. */
+    int64_t ids[PURGE_MAX_IDS] = {0};
     size_t count = purge_collect_ids(ctx, ids, PURGE_MAX_IDS);
 
     if (ctx->record_action != NULL) {

@@ -24,20 +24,9 @@
 #include "tg/tg_types.h"
 #include "tg/util.h"
 
-/** @brief Number of recent (chat, message) ids retained for /purge. */
-#define ROUTER_RECENT_CAP 2048u
-
 /** @brief The router state. */
 struct router {
     router_config_t cfg; /**< Copied configuration. */
-    /* A bounded ring of the most recent (chat_id, message_id) pairs, used by
-     * /purge to enumerate the ids between a replied-to message and the command. */
-    struct {
-        int64_t chat_id;         /**< Chat the message was in. */
-        int64_t message_id;      /**< Message id. */
-    } recent[ROUTER_RECENT_CAP]; /**< Ring storage. */
-    size_t recent_len;           /**< Number of valid entries (<= ROUTER_RECENT_CAP). */
-    size_t recent_head;          /**< Next write position (ring). */
 };
 
 /* --- Pure parsing ---------------------------------------------------------- */
@@ -186,48 +175,6 @@ int router_resolve_target(const cmd_invocation_t *inv, const tg_message_t *msg, 
     }
     *out = (int64_t)id;
     return 0;
-}
-
-/* --- Recent-message ring --------------------------------------------------- */
-
-/**
- * @brief Record a (chat_id, message_id) pair in the router's ring.
- *
- * @param[in,out] r       Router.
- * @param[in]     chat_id Chat.
- * @param[in]     msg_id  Message id.
- */
-static void recent_record(router_t *r, int64_t chat_id, int64_t msg_id)
-{
-    r->recent[r->recent_head].chat_id = chat_id;
-    r->recent[r->recent_head].message_id = msg_id;
-    r->recent_head = (r->recent_head + 1u) % ROUTER_RECENT_CAP;
-    if (r->recent_len < ROUTER_RECENT_CAP) {
-        r->recent_len++;
-    }
-}
-
-/**
- * @brief Collect the recent ids for @p chat_id, oldest first, into @p out.
- *
- * @param[in]  r       Router.
- * @param[in]  chat_id Chat to filter on.
- * @param[out] out     Destination array.
- * @param[in]  cap     Capacity of @p out.
- *
- * @return Number of ids written.
- */
-static size_t recent_collect(const router_t *r, int64_t chat_id, int64_t *out, size_t cap)
-{
-    size_t n = 0;
-    size_t start = (r->recent_head + ROUTER_RECENT_CAP - r->recent_len) % ROUTER_RECENT_CAP;
-    for (size_t i = 0; i < r->recent_len && n < cap; ++i) {
-        size_t idx = (start + i) % ROUTER_RECENT_CAP;
-        if (r->recent[idx].chat_id == chat_id) {
-            out[n++] = r->recent[idx].message_id;
-        }
-    }
-    return n;
 }
 
 /* --- DB upserts ------------------------------------------------------------ */
@@ -505,11 +452,6 @@ static int handle_message(router_t *r, const tg_update_t *upd)
     /* Upsert the sender/chat for every non-service message. */
     upsert_message(r, msg);
 
-    /* Remember the message id so a later /purge can enumerate a range. */
-    if (msg->chat.id != 0 && msg->message_id != 0) {
-        recent_record(r, msg->chat.id, msg->message_id);
-    }
-
     if (msg->is_service || msg->from.is_bot || msg->text[0] == '\0') {
         return 0; /* service messages, bots and non-text are not commands */
     }
@@ -563,13 +505,6 @@ static int handle_message(router_t *r, const tg_update_t *upd)
             return trc;
         }
         return 0; /* an asynchronous lookup owns the dispatch now */
-    }
-
-    /* Collect the recent ids for /purge before dispatching. */
-    if (cmd_lookup(d->inv.name) != NULL) {
-        int64_t ids[CMD_RECENT_MAX];
-        size_t n = recent_collect(r, copy->chat.id, ids, CMD_RECENT_MAX);
-        (void)cmd_call_set_recent(call, ids, n);
     }
 
     dispatch_with_admins(d);

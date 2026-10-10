@@ -114,9 +114,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `restrictChatMember` permissions), marking each row lifted; it survives restarts
   because `expires_at` is wall-clock (SPEC section 5.6).
 - M4: the router now resolves the target from a reply, a numeric id, or an
-  `@username` (via the `users` cache), derives the caller/target/bot roles from a
-  single `getChatAdministrators` fetch, checks the bot's own rights, and maintains a
-  bounded per-chat recent-message ring for `/purge` (`src/router.c`).
+  `@username` (via the `users` cache) and derives the caller/target/bot roles from a
+  single `getChatAdministrators` fetch (`src/router.c`).
 - M4: DB jobs for `actions` insert, the expiry sweep, the lift update, and a
   username lookup (`src/db.c`, `include/tg/db.h`).
 - M4 API methods: `banChatMember`, `unbanChatMember`, `restrictChatMember`,
@@ -145,5 +144,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   could not be verified instead of dropping the command silently
   (`src/router.c`); regression test `test_private_chat_help_replies_without_admin_fetch`
   added.
+- M4 `/purge` deleted only the ids it had observed in an in-memory ring, so after a
+  restart (or for messages sent before the bot started) it removed just the replied-to
+  message and the command, appearing not to work. It now deletes the whole
+  sequential id range from the replied-to message to the command, independent of what
+  the bot observed (`src/cmd_msg.c`); the now-unused router ring was removed, and
+  `test_purge_covers_reply_to_command_range` / `test_purge_caps_at_max_ids` plus the
+  `purge_range` integration scenario were added.
 
 [Unreleased]: https://github.com/cuwayo/nacho-moderation/commits/main

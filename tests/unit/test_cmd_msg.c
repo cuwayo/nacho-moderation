@@ -173,7 +173,7 @@ static void test_unpin_last(void **state)
     fake_drain(&f);
 }
 
-static void test_purge_batches_and_includes_range(void **state)
+static void test_purge_covers_reply_to_command_range(void **state)
 {
     (void)state;
     fake_api_t f = {0};
@@ -181,18 +181,13 @@ static void test_purge_batches_and_includes_range(void **state)
     int64_t now = 0;
     wall_clock_ops_t wall = {.now_unix = fake_now_unix, .ctx = &now};
 
+    /* make_call sets message_id=42 and reply_to=10, so the range is 10..42. */
     cmd_call_t *call = make_call(&api, &wall, "purge", 10);
-    /* Recent ids 5..42 in this chat; the command is 42, reply is 10. */
-    int64_t ids[64];
-    size_t n = 0;
-    for (int64_t id = 5; id <= 42; ++id) {
-        ids[n++] = id;
-    }
-    assert_int_equal(cmd_call_set_recent(call, ids, n), 0);
     assert_int_equal(cmd_purge(cmd_call_ctx(call)), 0);
     assert_int_equal(f.calls, 1); /* 33 ids fit in one batch of 100 */
     assert_int_equal(f.last_method, METHOD_DELETE_MESSAGES);
-    assert_non_null(strstr(f.last_body, "\"message_ids\":[10,"));
+    assert_non_null(strstr(f.last_body, "\"message_ids\":[10,11,12,"));
+    assert_non_null(strstr(f.last_body, ",41,42]"));
     cmd_call_release(call);
     fake_drain(&f);
 }
@@ -207,16 +202,29 @@ static void test_purge_splits_into_batches_of_100(void **state)
 
     cmd_call_t *call = make_call(&api, &wall, "purge", 1);
     cmd_call_message(call)->message_id = 250; /* the command is the last message */
-    /* 250 ids in range: Telegram's deleteMessages limit is 100, so /purge must
-     * issue three batches (SPEC-ADDENDUM-TOOLCHAIN A5.3 scenario 10). */
-    int64_t ids[300];
-    size_t n = 0;
-    for (int64_t id = 1; id <= 250; ++id) {
-        ids[n++] = id;
-    }
-    assert_int_equal(cmd_call_set_recent(call, ids, n), 0);
+    /* 250 ids in range (1..250): Telegram's deleteMessages limit is 100, so /purge
+     * must issue three batches (SPEC-ADDENDUM-TOOLCHAIN A5.3 scenario 10). */
     assert_int_equal(cmd_purge(cmd_call_ctx(call)), 0);
     assert_int_equal(f.calls, 3);
+    cmd_call_release(call);
+    fake_drain(&f);
+}
+
+static void test_purge_caps_at_max_ids(void **state)
+{
+    (void)state;
+    fake_api_t f = {0};
+    tg_api_ops_t api = {.request = fake_request, .ctx = &f};
+    int64_t now = 0;
+    wall_clock_ops_t wall = {.now_unix = fake_now_unix, .ctx = &now};
+
+    /* A range larger than PURGE_MAX_IDS keeps the newest ids and batches them. */
+    cmd_call_t *call = make_call(&api, &wall, "purge", 1);
+    cmd_call_message(call)->message_id = 5000;
+    assert_int_equal(cmd_purge(cmd_call_ctx(call)), 0);
+    /* PURGE_MAX_IDS (1000) / 100 == 10 batches, and the last id is the command. */
+    assert_int_equal(f.calls, 10);
+    assert_non_null(strstr(f.last_body, ",5000]"));
     cmd_call_release(call);
     fake_drain(&f);
 }
@@ -228,8 +236,9 @@ int main(void)
         cmocka_unit_test(test_del_requires_reply),
         cmocka_unit_test(test_pin_silent),
         cmocka_unit_test(test_unpin_last),
-        cmocka_unit_test(test_purge_batches_and_includes_range),
+        cmocka_unit_test(test_purge_covers_reply_to_command_range),
         cmocka_unit_test(test_purge_splits_into_batches_of_100),
+        cmocka_unit_test(test_purge_caps_at_max_ids),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

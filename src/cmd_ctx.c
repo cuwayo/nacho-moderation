@@ -37,8 +37,6 @@ struct cmd_call {
     const tg_api_ops_t *api;                 /**< API seam (borrowed; outlives the call). */
     const db_ops_t *db;                      /**< DB seam (borrowed; may be NULL). */
     const wall_clock_ops_t *wall;            /**< Wall clock (borrowed). */
-    int64_t *recent;                         /**< Owned ring of recent message ids (for /purge). */
-    size_t recent_count;                     /**< Entries in @ref recent. */
     char target_label[CMD_TARGET_LABEL_MAX]; /**< Storage for @c ctx.target_label. */
 };
 
@@ -244,35 +242,6 @@ int cmd_call_set_target_label(cmd_call_t *call, const char *label)
     return 0;
 }
 
-int cmd_call_set_recent(cmd_call_t *call, const int64_t *ids, size_t count)
-{
-    if (call == NULL || (ids == NULL && count != 0)) {
-        return -EINVAL;
-    }
-    free(call->recent);
-    call->recent = NULL;
-    call->recent_count = 0;
-    call->ctx.recent_ids = NULL;
-    call->ctx.recent_count = 0;
-    if (count == 0) {
-        return 0;
-    }
-    if (count > CMD_RECENT_MAX) {
-        ids += count - CMD_RECENT_MAX; /* keep the newest ids */
-        count = CMD_RECENT_MAX;
-    }
-    int64_t *copy = malloc(count * sizeof(*copy));
-    if (copy == NULL) {
-        return -ENOMEM;
-    }
-    (void)memcpy(copy, ids, count * sizeof(*copy));
-    call->recent = copy;
-    call->recent_count = count;
-    call->ctx.recent_ids = copy;
-    call->ctx.recent_count = count;
-    return 0;
-}
-
 void cmd_call_retain(cmd_call_t *call)
 {
     if (call != NULL) {
@@ -288,7 +257,6 @@ void cmd_call_release(cmd_call_t *call)
     if (--call->refs > 0) {
         return;
     }
-    free(call->recent);
     free(call);
 }
 

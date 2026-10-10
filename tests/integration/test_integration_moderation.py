@@ -160,6 +160,16 @@ class ModerationIntegrationTest(unittest.TestCase):
         # The @spammer username (user 300) was resolved from the users cache.
         self.assertEqual(ban["json"]["user_id"], 300)
 
+    def test_purge_deletes_reply_to_command_range(self) -> None:
+        proc, log = self._start("purge_range.json")
+        ok = self._wait_for(log, lambda calls: any(c["method"] == "deleteMessages" for c in calls))
+        self._stop(proc)
+        self.assertTrue(ok, msg=f"no deleteMessages; calls: {read_calls(log)}")
+        call = next(c for c in read_calls(log) if c["method"] == "deleteMessages")
+        # The reply is message 1 and the command is message 6, so the range 1..6
+        # is deleted in one batch — independent of what the bot observed.
+        self.assertEqual(call["json"]["message_ids"], [1, 2, 3, 4, 5, 6])
+
 
 if __name__ == "__main__":
     unittest.main()
