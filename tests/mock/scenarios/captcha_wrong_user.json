@@ -1,0 +1,20 @@
+{
+  "_comment": "M6 captcha, wrong-user rejection. A callback_query carries captcha data for user 300, but it is pressed by user 999. The bot must reject it (answerCallbackQuery) without consulting the pending row. The empty trailing batch keeps polling after the callback is consumed.",
+  "updates": [
+    [
+      {
+        "update_id": 1,
+        "callback_query": {
+          "id": "cb-wrong",
+          "from": {"id": 999, "is_bot": false, "first_name": "Impostor"},
+          "data": "cap:-1001234567890:300:deadbeef",
+          "message": {
+            "message_id": 20,
+            "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"}
+          }
+        }
+      }
+    ],
+    []
+  ]
+}

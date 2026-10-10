@@ -24,6 +24,27 @@
 /** @brief Maximum number of new chat members captured from one join message. */
 #define TG_MAX_NEW_MEMBERS 16u
 
+/** @brief Maximum number of message entities captured from one message. */
+#define TG_MAX_ENTITIES 8u
+
+/** @brief Maximum length of a message caption (Telegram caps it at 1024 chars). */
+#define TG_CAPTION_MAX 1024u
+
+/** @brief One message entity (SPEC section 5.3, links/commands detection). */
+typedef struct {
+    char type[24];  /**< Entity type ("url", "text_link", "mention", "bot_command", ...). */
+    int64_t offset; /**< UTF-16 offset into the message text/caption. */
+    int64_t length; /**< Length in UTF-16 code units. */
+} tg_entity_t;
+
+/* Message content flags (a bitmask in @ref tg_message_t.content_flags); each maps
+ * to a lock type in locks.def so automod can classify a message without the JSON. */
+#define TG_CONTENT_MEDIA 0x01u     /**< Photo, video, document, audio or similar. */
+#define TG_CONTENT_STICKER 0x02u   /**< A sticker. */
+#define TG_CONTENT_ANIMATION 0x04u /**< An animation (GIF / animated emoji). */
+#define TG_CONTENT_FORWARD 0x08u   /**< A forwarded message. */
+#define TG_CONTENT_POLL 0x10u      /**< A poll or quiz. */
+
 /** @brief A Telegram user (subset used by the bot). */
 typedef struct {
     int64_t id;           /**< User id (unique, never 0 for a real user). */
@@ -41,15 +62,19 @@ typedef struct {
 
 /** @brief A Telegram message (subset used by the bot). */
 typedef struct {
-    int64_t message_id;          /**< Per-chat message id. */
-    int64_t date;                /**< Unix time the message was sent. */
-    tg_user_t from;              /**< Sender (zeroed for service messages). */
-    tg_chat_t chat;              /**< Chat the message belongs to. */
-    char text[4097];             /**< Message text (UTF-8, NUL-terminated; "" if none). */
-    int has_reply;               /**< 1 if the message replies to another message. */
-    int64_t reply_to_message_id; /**< Id of the replied-to message (0 if none). */
-    tg_user_t reply_from;        /**< Sender of the replied-to message (valid if has_reply). */
-    unsigned new_member_count;   /**< Entries in @ref new_members. */
+    int64_t message_id;                    /**< Per-chat message id. */
+    int64_t date;                          /**< Unix time the message was sent. */
+    tg_user_t from;                        /**< Sender (zeroed for service messages). */
+    tg_chat_t chat;                        /**< Chat the message belongs to. */
+    char text[4097];                       /**< Message text (UTF-8, NUL-terminated; "" if none). */
+    char caption[TG_CAPTION_MAX];          /**< Media caption (UTF-8; "" if none). */
+    unsigned content_flags;                /**< TG_CONTENT_* bitmask describing the message body. */
+    unsigned entity_count;                 /**< Entries in @ref entities. */
+    tg_entity_t entities[TG_MAX_ENTITIES]; /**< Message entities (links, mentions, commands). */
+    int has_reply;                         /**< 1 if the message replies to another message. */
+    int64_t reply_to_message_id;           /**< Id of the replied-to message (0 if none). */
+    tg_user_t reply_from;      /**< Sender of the replied-to message (valid if has_reply). */
+    unsigned new_member_count; /**< Entries in @ref new_members. */
     tg_user_t new_members[TG_MAX_NEW_MEMBERS]; /**< Users added by a join message. */
     int is_service; /**< 1 for a service message (no sender, e.g. joins/pins). */
 } tg_message_t;

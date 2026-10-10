@@ -168,7 +168,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `warn_limit_action`, `welcome_join`, `welcome_join_part2` and `settings_panel`
   scenarios.
 
+### Added (M6)
+
+- M6: automated moderation (`src/automod.c`, `include/tg/automod.h`) running on
+  every group message before command dispatch, in the SPEC section 5.3 order
+  **locks -> blacklist -> antiflood**. Administrators, the owner and sudo users
+  are skipped; deletions, warnings and mutes are issued through the API/DB seams
+  and recorded as `actions` rows with the moderation log (SPEC section 5.5).
+- M6: **locks** — a per-chat bitmask (`chats.locks`) generated from `src/locks.def`
+  (`links`, `media`, `stickers`, `forwards`, `polls`, `invites`, `bots`,
+  `commands`); a locked message is deleted and logged. The message classifier
+  (`automod_locked_content`) is pure and unit-tested.
+- M6: **blacklist** — word and `/regex/` patterns (`blacklist` table) matched
+  case-insensitively over the text or media caption; a match deletes the message,
+  warns the sender and applies the configured warn action at the limit, reusing
+  the `/warn` auto-action. Regexes are compiled with PCRE2 under match/depth
+  limits so a hostile pattern cannot stall the loop (SPEC section 10).
+- M6: **antiflood** — an in-memory sliding window per `(chat_id, user_id)` (SPEC
+  section 5.3): exceeding the threshold mutes the sender (temporary restriction
+  the expiry sweeper lifts) and deletes the burst messages. The window arithmetic
+  (`automod_flood_track`) is pure and driven by the injected clock.
+- M6: **join captcha** (`src/captcha.c`, `include/tg/captcha.h`, SPEC section 5.4)
+  — a new member is immediately restricted, sent an inline "I'm human" button and
+  recorded in `pending_captcha` with a deadline; a correct-user press lifts the
+  restriction, deletes the prompt and delivers the welcome, a wrong-user press is
+  rejected (SPEC section 10), and a periodic sweep kicks members whose deadline
+  passed (ban then unban). The callback parser (`captcha_parse_callback`) is pure
+  and fuzz-tested; the nonce comes from a new injectable random source
+  (`random_ops_t`, seeded once at startup) so tests are deterministic
+  (SPEC-ADDENDUM-TOOLCHAIN A3).
+- M6: automod configuration commands `src/cmd_automod.c` — `/lock`, `/unlock`
+  (multiple lock types, comma/space separated), `/blacklist add|del|list`,
+  `/antiflood <messages> <seconds>|off` and `/captcha on|off` (SPEC section 5.2).
+- M6: the message parser (`src/tg_types.c`) now captures entities, captions,
+  media/sticker/animation/forward/poll presence flags and the content type, so
+  locks and the blacklist can classify a message without the raw JSON.
+- M6: DB worker jobs for the blacklist (`DB_JOB_BLACKLIST_*`) and pending captcha
+  (`DB_JOB_CAPTCHA_*`), the new `chats` automod columns (captcha, antiflood,
+  locks) in the settings snapshot, and an injectable random source in `util`.
+- M6 tests: `test_automod` (lock classifier, blacklist matcher, flood window),
+  `test_captcha` (parser, callback verification, timeout sweep) and
+  `test_cmd_automod` (command argument parsing), extended `test_db` (blacklist,
+  captcha and the automod settings columns); a `fuzz_captcha_callback` fuzz
+  target; and the `integration-m6` end-to-end test with `automod_locks`,
+  `automod_antiflood`, `captcha_join`, `captcha_join_part2` and
+  `captcha_wrong_user` scenarios.
+
 ### Fixed
+
+- M6: `foreach_token`'s unrecognized-token pointer in `/lock`/`/unlock` pointed
+  into a stack buffer that did not outlive the visitor, so the "Unknown lock
+  type" reply read freed stack memory. The token is now copied into the parse
+  accumulator (`src/cmd_automod.c`); caught by the ASan build.
 
 - M1/M2 TLS: a request queued before the handshake completed (the API pool queues
   it while the connection is still `CONNECTING`) was encrypted with `SSL_write()`

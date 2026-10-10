@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/random.h>
 #include <time.h>
 
 #include "tables.h"
@@ -67,6 +68,59 @@ int64_t wall_now_unix(const wall_clock_ops_t *c)
         return 0;
     }
     return c->now_unix(c->ctx);
+}
+
+/* --- Random source --------------------------------------------------------- */
+
+/** @brief splitmix64 state (seeded by @ref util_random_seed). */
+static uint64_t g_random_state;
+
+/**
+ * @brief splitmix64: advance the state and return the next 64 bits.
+ *
+ * A small, fast, well-distributed generator; not cryptographically strong, but
+ * the captcha nonce is combined with the chat/user ids and is only a
+ * short-lived anti-forgery token, so this is sufficient (and, unlike reading
+ * /dev/urandom, never blocks the loop).
+ *
+ * @param[in] ctx Unused (NULL).
+ * @return The next 64 random bits.
+ */
+static uint64_t real_next_u64(void *ctx)
+{
+    (void)ctx;
+    g_random_state += 0x9E3779B97F4A7C15ULL;
+    uint64_t z = g_random_state;
+    z = (z ^ (z >> 30u)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27u)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31u);
+}
+
+const random_ops_t util_random_ops_real = {.next_u64 = real_next_u64, .ctx = NULL};
+
+uint64_t util_random_u64(const random_ops_t *r)
+{
+    if (r == NULL || r->next_u64 == NULL) {
+        return 0;
+    }
+    return r->next_u64(r->ctx);
+}
+
+void util_random_seed(void)
+{
+    uint64_t seed = 0;
+    ssize_t n = getrandom(&seed, sizeof(seed), 0);
+    if (n != (ssize_t)sizeof(seed)) {
+        /* Fallback: mix the wall clock and a stack address. Only reached when
+         * getrandom() is unavailable; still varied enough for a short-lived
+         * nonce. */
+        uint64_t addr = (uint64_t)(uintptr_t)&seed;
+        seed = (uint64_t)time(NULL) ^ (addr << 17u);
+    }
+    if (seed == 0) {
+        seed = 0x2545F4914F6CDD1DULL; /* never leave the state at zero */
+    }
+    g_random_state = seed;
 }
 
 /* --- Arena ----------------------------------------------------------------- */

@@ -33,6 +33,8 @@ void db_settings_defaults(chat_settings_t *out)
     memset(out, 0, sizeof(*out));
     out->warn_limit = 3;
     out->log_chat_id = 0;
+    out->captcha_timeout = 120;
+    out->flood_window = 10;
     (void)snprintf(out->warn_action, sizeof(out->warn_action), "%s", "mute");
 }
 
@@ -80,7 +82,8 @@ void db_settings_defaults(chat_settings_t *out)
     "ORDER BY id DESC LIMIT ?3"
 /** @brief Read a chat's moderation policy row. */
 #define DB_SQL_SETTINGS_GET                                                                        \
-    "SELECT warn_limit, warn_action, welcome_enabled, welcome_text, rules_text, log_chat_id "      \
+    "SELECT warn_limit, warn_action, welcome_enabled, welcome_text, rules_text, log_chat_id, "     \
+    "captcha_enabled, captcha_timeout, flood_limit, flood_window, locks "                          \
     "FROM chats WHERE chat_id=?1"
 /** @brief Masked settings write: set `chats.warn_limit`.
  *
@@ -110,6 +113,49 @@ void db_settings_defaults(chat_settings_t *out)
 #define DB_SQL_SET_RULES_TEXT                                                                      \
     "INSERT INTO chats(chat_id, rules_text) VALUES(?1, ?2) ON CONFLICT(chat_id) "                  \
     "DO UPDATE SET rules_text=excluded.rules_text"
+/** @brief Masked settings write: set `chats.captcha_enabled`. */
+#define DB_SQL_SET_CAPTCHA_ON                                                                      \
+    "INSERT INTO chats(chat_id, captcha_enabled) VALUES(?1, ?2) ON CONFLICT(chat_id) "             \
+    "DO UPDATE SET captcha_enabled=excluded.captcha_enabled"
+/** @brief Masked settings write: set `chats.captcha_timeout`. */
+#define DB_SQL_SET_CAPTCHA_TIMEOUT                                                                 \
+    "INSERT INTO chats(chat_id, captcha_timeout) VALUES(?1, ?2) ON CONFLICT(chat_id) "             \
+    "DO UPDATE SET captcha_timeout=excluded.captcha_timeout"
+/** @brief Masked settings write: set `chats.flood_limit`. */
+#define DB_SQL_SET_FLOOD_LIMIT                                                                     \
+    "INSERT INTO chats(chat_id, flood_limit) VALUES(?1, ?2) ON CONFLICT(chat_id) "                 \
+    "DO UPDATE SET flood_limit=excluded.flood_limit"
+/** @brief Masked settings write: set `chats.flood_window`. */
+#define DB_SQL_SET_FLOOD_WINDOW                                                                    \
+    "INSERT INTO chats(chat_id, flood_window) VALUES(?1, ?2) ON CONFLICT(chat_id) "                \
+    "DO UPDATE SET flood_window=excluded.flood_window"
+/** @brief Masked settings write: set `chats.locks` (bitmask). */
+#define DB_SQL_SET_LOCKS                                                                           \
+    "INSERT INTO chats(chat_id, locks) VALUES(?1, ?2) ON CONFLICT(chat_id) "                       \
+    "DO UPDATE SET locks=excluded.locks"
+/** @brief Insert/replace a blacklist pattern. */
+#define DB_SQL_BLACKLIST_ADD                                                                       \
+    "INSERT INTO blacklist(chat_id, pattern, is_regex) VALUES(?1, ?2, ?3) "                        \
+    "ON CONFLICT(chat_id, pattern) DO UPDATE SET is_regex=excluded.is_regex"
+/** @brief Delete a blacklist pattern. */
+#define DB_SQL_BLACKLIST_DEL "DELETE FROM blacklist WHERE chat_id=?1 AND pattern=?2"
+/** @brief List a chat's blacklist patterns (bounded). */
+#define DB_SQL_BLACKLIST_LIST                                                                      \
+    "SELECT pattern, is_regex FROM blacklist WHERE chat_id=?1 ORDER BY pattern LIMIT ?2"
+/** @brief Insert/replace a pending captcha row. */
+#define DB_SQL_CAPTCHA_PUT                                                                         \
+    "INSERT INTO pending_captcha(chat_id, user_id, message_id, nonce, deadline) "                  \
+    "VALUES(?1, ?2, ?3, ?4, ?5) ON CONFLICT(chat_id, user_id) DO UPDATE SET "                      \
+    "message_id=excluded.message_id, nonce=excluded.nonce, deadline=excluded.deadline"
+/** @brief Read one pending captcha row. */
+#define DB_SQL_CAPTCHA_GET                                                                         \
+    "SELECT message_id, nonce, deadline FROM pending_captcha WHERE chat_id=?1 AND user_id=?2"
+/** @brief Delete one pending captcha row. */
+#define DB_SQL_CAPTCHA_DEL "DELETE FROM pending_captcha WHERE chat_id=?1 AND user_id=?2"
+/** @brief Fetch due pending captcha rows (deadline passed), bounded. */
+#define DB_SQL_CAPTCHA_EXPIRE                                                                      \
+    "SELECT chat_id, user_id, message_id, nonce, deadline FROM pending_captcha "                   \
+    "WHERE deadline<=?1 ORDER BY deadline LIMIT ?2"
 
 /** @brief Schema migration v0 -> v1 (SPEC section 6). Idempotent via IF NOT EXISTS. */
 static const char *const SCHEMA_V1 =
@@ -277,6 +323,18 @@ typedef struct {
     sqlite3_stmt *set_welcome_on;   /**< DB_SQL_SET_WELCOME_ON. */
     sqlite3_stmt *set_welcome_text; /**< DB_SQL_SET_WELCOME_TEXT. */
     sqlite3_stmt *set_rules_text;   /**< DB_SQL_SET_RULES_TEXT. */
+    sqlite3_stmt *set_captcha_on;   /**< DB_SQL_SET_CAPTCHA_ON. */
+    sqlite3_stmt *set_captcha_to;   /**< DB_SQL_SET_CAPTCHA_TIMEOUT. */
+    sqlite3_stmt *set_flood_limit;  /**< DB_SQL_SET_FLOOD_LIMIT. */
+    sqlite3_stmt *set_flood_window; /**< DB_SQL_SET_FLOOD_WINDOW. */
+    sqlite3_stmt *set_locks;        /**< DB_SQL_SET_LOCKS. */
+    sqlite3_stmt *blacklist_add;    /**< DB_SQL_BLACKLIST_ADD. */
+    sqlite3_stmt *blacklist_del;    /**< DB_SQL_BLACKLIST_DEL. */
+    sqlite3_stmt *blacklist_list;   /**< DB_SQL_BLACKLIST_LIST. */
+    sqlite3_stmt *captcha_put;      /**< DB_SQL_CAPTCHA_PUT. */
+    sqlite3_stmt *captcha_get;      /**< DB_SQL_CAPTCHA_GET. */
+    sqlite3_stmt *captcha_del;      /**< DB_SQL_CAPTCHA_DEL. */
+    sqlite3_stmt *captcha_expire;   /**< DB_SQL_CAPTCHA_EXPIRE. */
 } db_stmts_t;
 
 /**
@@ -304,6 +362,18 @@ static void stmts_finalize(db_stmts_t *st)
     sqlite3_finalize(st->set_welcome_on);
     sqlite3_finalize(st->set_welcome_text);
     sqlite3_finalize(st->set_rules_text);
+    sqlite3_finalize(st->set_captcha_on);
+    sqlite3_finalize(st->set_captcha_to);
+    sqlite3_finalize(st->set_flood_limit);
+    sqlite3_finalize(st->set_flood_window);
+    sqlite3_finalize(st->set_locks);
+    sqlite3_finalize(st->blacklist_add);
+    sqlite3_finalize(st->blacklist_del);
+    sqlite3_finalize(st->blacklist_list);
+    sqlite3_finalize(st->captcha_put);
+    sqlite3_finalize(st->captcha_get);
+    sqlite3_finalize(st->captcha_del);
+    sqlite3_finalize(st->captcha_expire);
 }
 
 /**
@@ -350,6 +420,18 @@ static int worker_open(const char *path, sqlite3 **out_db, db_stmts_t *out_st)
         {&st.set_welcome_on, DB_SQL_SET_WELCOME_ON},
         {&st.set_welcome_text, DB_SQL_SET_WELCOME_TEXT},
         {&st.set_rules_text, DB_SQL_SET_RULES_TEXT},
+        {&st.set_captcha_on, DB_SQL_SET_CAPTCHA_ON},
+        {&st.set_captcha_to, DB_SQL_SET_CAPTCHA_TIMEOUT},
+        {&st.set_flood_limit, DB_SQL_SET_FLOOD_LIMIT},
+        {&st.set_flood_window, DB_SQL_SET_FLOOD_WINDOW},
+        {&st.set_locks, DB_SQL_SET_LOCKS},
+        {&st.blacklist_add, DB_SQL_BLACKLIST_ADD},
+        {&st.blacklist_del, DB_SQL_BLACKLIST_DEL},
+        {&st.blacklist_list, DB_SQL_BLACKLIST_LIST},
+        {&st.captcha_put, DB_SQL_CAPTCHA_PUT},
+        {&st.captcha_get, DB_SQL_CAPTCHA_GET},
+        {&st.captcha_del, DB_SQL_CAPTCHA_DEL},
+        {&st.captcha_expire, DB_SQL_CAPTCHA_EXPIRE},
     };
     for (size_t i = 0; i < sizeof(prep) / sizeof(prep[0]); ++i) {
         if (sqlite3_prepare_v2(sdb, prep[i].sql, -1, prep[i].slot, NULL) != SQLITE_OK) {
@@ -478,6 +560,11 @@ static int execute_settings(db_stmts_t *st, const db_job_t *job, db_result_t *re
             /* log_chat_id is NULL when unset; column_int64 returns 0 then, which
              * already means "disabled". */
             res->settings.log_chat_id = sqlite3_column_int64(s, 5);
+            res->settings.captcha_enabled = sqlite3_column_int(s, 6);
+            res->settings.captcha_timeout = sqlite3_column_int(s, 7);
+            res->settings.flood_limit = sqlite3_column_int(s, 8);
+            res->settings.flood_window = sqlite3_column_int(s, 9);
+            res->settings.locks = (unsigned)sqlite3_column_int64(s, 10);
         }
         sqlite3_reset(s);
         sqlite3_clear_bindings(s);
@@ -508,6 +595,26 @@ static int execute_settings(db_stmts_t *st, const db_job_t *job, db_result_t *re
     case DB_SET_RULES_TEXT:
         s = st->set_rules_text;
         break;
+    case DB_SET_CAPTCHA_ON:
+        s = st->set_captcha_on;
+        numeric = 1;
+        break;
+    case DB_SET_CAPTCHA_TIMEOUT:
+        s = st->set_captcha_to;
+        numeric = 1;
+        break;
+    case DB_SET_FLOOD_LIMIT:
+        s = st->set_flood_limit;
+        numeric = 1;
+        break;
+    case DB_SET_FLOOD_WINDOW:
+        s = st->set_flood_window;
+        numeric = 1;
+        break;
+    case DB_SET_LOCKS:
+        s = st->set_locks;
+        numeric = 1;
+        break;
     default:
         return -EINVAL;
     }
@@ -518,6 +625,116 @@ static int execute_settings(db_stmts_t *st, const db_job_t *job, db_result_t *re
         sqlite3_bind_text(s, 2, job->text, -1, SQLITE_TRANSIENT);
     }
     return step_done(s);
+}
+
+/**
+ * @brief Execute a blacklist job (add / delete / list).
+ *
+ * Extracted from @ref worker_execute to keep its cognitive complexity bounded.
+ *
+ * @param[in]  st  Prepared statements.
+ * @param[in]  job Job to run.
+ * @param[out] res Result to fill (the row list for a list query).
+ *
+ * @return 0 on success, -ERR_DB on failure.
+ */
+static int execute_blacklist(db_stmts_t *st, const db_job_t *job, db_result_t *res)
+{
+    if (job->kind == DB_JOB_BLACKLIST_ADD) {
+        sqlite3_stmt *s = st->blacklist_add;
+        sqlite3_bind_int64(s, 1, job->id); /* chat_id */
+        sqlite3_bind_text(s, 2, job->pattern, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(s, 3, job->value != 0 ? 1 : 0); /* is_regex */
+        return step_done(s);
+    }
+    if (job->kind == DB_JOB_BLACKLIST_DEL) {
+        sqlite3_stmt *s = st->blacklist_del;
+        sqlite3_bind_int64(s, 1, job->id);
+        sqlite3_bind_text(s, 2, job->pattern, -1, SQLITE_TRANSIENT);
+        return step_done(s);
+    }
+    /* DB_JOB_BLACKLIST_LIST */
+    sqlite3_stmt *s = st->blacklist_list;
+    sqlite3_bind_int64(s, 1, job->id);
+    sqlite3_bind_int(s, 2, (int)DB_MAX_BLACKLIST);
+    res->blacklist_count = 0;
+    while (res->blacklist_count < DB_MAX_BLACKLIST && sqlite3_step(s) == SQLITE_ROW) {
+        db_blacklist_t *b = &res->blacklist[res->blacklist_count];
+        const unsigned char *p = sqlite3_column_text(s, 0);
+        (void)snprintf(b->pattern, sizeof(b->pattern), "%s", p != NULL ? (const char *)p : "");
+        b->is_regex = sqlite3_column_int(s, 1);
+        res->blacklist_count++;
+    }
+    sqlite3_reset(s);
+    sqlite3_clear_bindings(s);
+    return 0;
+}
+
+/**
+ * @brief Execute a captcha job (put / get / delete / expire).
+ *
+ * Extracted from @ref worker_execute to keep its cognitive complexity bounded.
+ *
+ * @param[in]  st  Prepared statements.
+ * @param[in]  job Job to run.
+ * @param[out] res Result to fill (@ref db_result_t.captcha for get/expire).
+ *
+ * @return 0 on success, -ERR_DB on failure.
+ */
+static int execute_captcha(db_stmts_t *st, const db_job_t *job, db_result_t *res)
+{
+    if (job->kind == DB_JOB_CAPTCHA_PUT) {
+        sqlite3_stmt *s = st->captcha_put;
+        sqlite3_bind_int64(s, 1, job->id); /* chat_id */
+        sqlite3_bind_int64(s, 2, job->user_id);
+        sqlite3_bind_int64(s, 3, job->message_id);
+        sqlite3_bind_text(s, 4, job->nonce, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(s, 5, job->expires_at);
+        return step_done(s);
+    }
+    if (job->kind == DB_JOB_CAPTCHA_DEL) {
+        sqlite3_stmt *s = st->captcha_del;
+        sqlite3_bind_int64(s, 1, job->id);
+        sqlite3_bind_int64(s, 2, job->user_id);
+        return step_done(s);
+    }
+    if (job->kind == DB_JOB_CAPTCHA_GET) {
+        sqlite3_stmt *s = st->captcha_get;
+        sqlite3_bind_int64(s, 1, job->id);
+        sqlite3_bind_int64(s, 2, job->user_id);
+        res->captcha_found = 0;
+        if (sqlite3_step(s) == SQLITE_ROW) {
+            db_captcha_t *c = &res->captcha[0];
+            c->chat_id = job->id;
+            c->user_id = job->user_id;
+            c->message_id = sqlite3_column_int64(s, 0);
+            const unsigned char *n = sqlite3_column_text(s, 1);
+            (void)snprintf(c->nonce, sizeof(c->nonce), "%s", n != NULL ? (const char *)n : "");
+            c->deadline = sqlite3_column_int64(s, 2);
+            res->captcha_found = 1;
+        }
+        sqlite3_reset(s);
+        sqlite3_clear_bindings(s);
+        return 0;
+    }
+    /* DB_JOB_CAPTCHA_EXPIRE */
+    sqlite3_stmt *s = st->captcha_expire;
+    sqlite3_bind_int64(s, 1, job->now_unix);
+    sqlite3_bind_int(s, 2, (int)DB_MAX_CAPTCHA);
+    res->captcha_count = 0;
+    while (res->captcha_count < DB_MAX_CAPTCHA && sqlite3_step(s) == SQLITE_ROW) {
+        db_captcha_t *c = &res->captcha[res->captcha_count];
+        c->chat_id = sqlite3_column_int64(s, 0);
+        c->user_id = sqlite3_column_int64(s, 1);
+        c->message_id = sqlite3_column_int64(s, 2);
+        const unsigned char *n = sqlite3_column_text(s, 3);
+        (void)snprintf(c->nonce, sizeof(c->nonce), "%s", n != NULL ? (const char *)n : "");
+        c->deadline = sqlite3_column_int64(s, 4);
+        res->captcha_count++;
+    }
+    sqlite3_reset(s);
+    sqlite3_clear_bindings(s);
+    return 0;
 }
 
 /**
@@ -607,6 +824,15 @@ static int worker_execute(db_stmts_t *st, const db_job_t *job, db_result_t *res)
     case DB_JOB_SETTINGS_GET:
     case DB_JOB_SETTINGS_SET:
         return execute_settings(st, job, res);
+    case DB_JOB_BLACKLIST_ADD:
+    case DB_JOB_BLACKLIST_DEL:
+    case DB_JOB_BLACKLIST_LIST:
+        return execute_blacklist(st, job, res);
+    case DB_JOB_CAPTCHA_PUT:
+    case DB_JOB_CAPTCHA_GET:
+    case DB_JOB_CAPTCHA_DEL:
+    case DB_JOB_CAPTCHA_EXPIRE:
+        return execute_captcha(st, job, res);
     default:
         return -ERR_DB;
     }

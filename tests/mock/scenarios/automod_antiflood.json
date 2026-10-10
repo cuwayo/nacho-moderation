@@ -1,0 +1,50 @@
+{
+  "_comment": "M6 antiflood. Batch 1: the admin sets /antiflood 2 10 (asynchronous settings write). Batch 2: a non-admin sends three messages; the third exceeds the window limit, so the bot mutes the user (restrictChatMember) and deletes the burst messages (deleteMessage). The empty trailing batch keeps polling.",
+  "updates": [
+    [
+      {
+        "update_id": 1,
+        "message": {
+          "message_id": 10,
+          "date": 1700000000,
+          "from": {"id": 200, "is_bot": false, "first_name": "Admin", "username": "admin"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "/antiflood 2 10"
+        }
+      }
+    ],
+    [
+      {
+        "update_id": 2,
+        "message": {
+          "message_id": 11,
+          "date": 1700000001,
+          "from": {"id": 300, "is_bot": false, "first_name": "Flooder", "username": "flooder"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "one"
+        }
+      },
+      {
+        "update_id": 3,
+        "message": {
+          "message_id": 12,
+          "date": 1700000002,
+          "from": {"id": 300, "is_bot": false, "first_name": "Flooder", "username": "flooder"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "two"
+        }
+      },
+      {
+        "update_id": 4,
+        "message": {
+          "message_id": 13,
+          "date": 1700000003,
+          "from": {"id": 300, "is_bot": false, "first_name": "Flooder", "username": "flooder"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "three"
+        }
+      }
+    ],
+    []
+  ]
+}

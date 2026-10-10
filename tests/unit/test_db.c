@@ -632,6 +632,204 @@ static void test_settings_log_chat_round_trip(void **state)
     unlink(path);
 }
 
+static void test_settings_automod_columns_round_trip(void **state)
+{
+    (void)state;
+    char path[32];
+    assert_int_equal(make_db_path(path, sizeof(path)), 0);
+    db_config_t cfg = {.path = path};
+    db_t *db = db_create(&cfg);
+    const db_ops_t *ops = db_ops(db);
+    capture_t cap = {0};
+
+    /* The M6 automod columns: captcha, antiflood and the lock bitmask. */
+    db_job_t cap_on = {
+        .kind = DB_JOB_SETTINGS_SET, .id = -100, .settings_mask = DB_SET_CAPTCHA_ON, .value = 1};
+    db_job_t cap_to = {.kind = DB_JOB_SETTINGS_SET,
+                       .id = -100,
+                       .settings_mask = DB_SET_CAPTCHA_TIMEOUT,
+                       .value = 90};
+    db_job_t fl = {
+        .kind = DB_JOB_SETTINGS_SET, .id = -100, .settings_mask = DB_SET_FLOOD_LIMIT, .value = 5};
+    db_job_t fw = {
+        .kind = DB_JOB_SETTINGS_SET, .id = -100, .settings_mask = DB_SET_FLOOD_WINDOW, .value = 10};
+    db_job_t lk = {.kind = DB_JOB_SETTINGS_SET,
+                   .id = -100,
+                   .settings_mask = DB_SET_LOCKS,
+                   .value = 0x1u | 0x4u};
+    assert_int_equal(ops->submit(ops->ctx, &cap_on, on_job, &cap), 0);
+    assert_int_equal(ops->submit(ops->ctx, &cap_to, on_job, &cap), 0);
+    assert_int_equal(ops->submit(ops->ctx, &fl, on_job, &cap), 0);
+    assert_int_equal(ops->submit(ops->ctx, &fw, on_job, &cap), 0);
+    assert_int_equal(ops->submit(ops->ctx, &lk, on_job, &cap), 0);
+    assert_int_equal(pump_until(db, &cap, 5), 0);
+    assert_int_equal(cap.status, 0);
+
+    db_result_t res = {0};
+    db_job_t get = {.kind = DB_JOB_SETTINGS_GET, .id = -100};
+    assert_int_equal(ops->submit(ops->ctx, &get, capture_result, &res), 0);
+    pump_result(db, &res);
+    assert_int_equal(res.settings.captcha_enabled, 1);
+    assert_int_equal(res.settings.captcha_timeout, 90);
+    assert_int_equal(res.settings.flood_limit, 5);
+    assert_int_equal(res.settings.flood_window, 10);
+    assert_int_equal(res.settings.locks, 0x1u | 0x4u);
+
+    db_destroy(db);
+    unlink(path);
+}
+
+/** @brief Completion that copies a blacklist-list result into a local. */
+static void capture_blacklist(const db_result_t *res, void *ctx)
+{
+    db_result_t *out = ctx;
+    out->blacklist_count = res->blacklist_count;
+    for (unsigned i = 0; i < res->blacklist_count && i < DB_MAX_BLACKLIST; ++i) {
+        out->blacklist[i] = res->blacklist[i];
+    }
+    out->status = res->status == 0 ? 1 : -1; /* sentinel: the query ran */
+}
+
+/** @brief Completion that copies a captcha-get result into a local (status 1 = ran). */
+static void capture_captcha(const db_result_t *res, void *ctx)
+{
+    db_result_t *out = ctx;
+    out->captcha_found = res->captcha_found;
+    if (res->captcha_found) {
+        out->captcha[0] = res->captcha[0];
+    }
+    out->status = res->status == 0 ? 1 : -1;
+}
+
+/** @brief Completion that copies a captcha-expire result into a local (status 1 = ran). */
+static void capture_expired(const db_result_t *res, void *ctx)
+{
+    db_result_t *out = ctx;
+    out->captcha_count = res->captcha_count;
+    for (unsigned i = 0; i < res->captcha_count && i < DB_MAX_CAPTCHA; ++i) {
+        out->captcha[i] = res->captcha[i];
+    }
+    out->status = res->status == 0 ? 1 : -1;
+}
+
+static void test_blacklist_add_list_delete(void **state)
+{
+    (void)state;
+    char path[32];
+    assert_int_equal(make_db_path(path, sizeof(path)), 0);
+    db_config_t cfg = {.path = path};
+    db_t *db = db_create(&cfg);
+    const db_ops_t *ops = db_ops(db);
+    capture_t cap = {0};
+
+    db_job_t a = {.kind = DB_JOB_BLACKLIST_ADD, .id = -100, .value = 0};
+    (void)snprintf(a.pattern, sizeof(a.pattern), "scam");
+    db_job_t b = {.kind = DB_JOB_BLACKLIST_ADD, .id = -100, .value = 1};
+    (void)snprintf(b.pattern, sizeof(b.pattern), "free\\s+crypto");
+    assert_int_equal(ops->submit(ops->ctx, &a, on_job, &cap), 0);
+    assert_int_equal(ops->submit(ops->ctx, &b, on_job, &cap), 0);
+    assert_int_equal(pump_until(db, &cap, 2), 0);
+
+    db_result_t list = {0};
+    db_job_t l = {.kind = DB_JOB_BLACKLIST_LIST, .id = -100};
+    assert_int_equal(ops->submit(ops->ctx, &l, capture_blacklist, &list), 0);
+    for (int i = 0; i < 20000 && list.status == 0; ++i) {
+        db_pump(db);
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 1000000};
+        nanosleep(&ts, NULL);
+    }
+    assert_int_equal(list.status, 1);
+    assert_int_equal(list.blacklist_count, 2);
+
+    /* Delete one and confirm the count drops. */
+    db_job_t d = {.kind = DB_JOB_BLACKLIST_DEL, .id = -100};
+    (void)snprintf(d.pattern, sizeof(d.pattern), "scam");
+    assert_int_equal(ops->submit(ops->ctx, &d, on_job, &cap), 0);
+    assert_int_equal(pump_until(db, &cap, 3), 0);
+    assert_int_equal(query_scalar(path, "SELECT count(*) FROM blacklist WHERE chat_id=-100"), 1);
+
+    db_destroy(db);
+    unlink(path);
+}
+
+static void test_captcha_put_get_delete(void **state)
+{
+    (void)state;
+    char path[32];
+    assert_int_equal(make_db_path(path, sizeof(path)), 0);
+    db_config_t cfg = {.path = path};
+    db_t *db = db_create(&cfg);
+    const db_ops_t *ops = db_ops(db);
+    capture_t cap = {0};
+
+    db_job_t put = {.kind = DB_JOB_CAPTCHA_PUT,
+                    .id = -100,
+                    .user_id = 42,
+                    .message_id = 7,
+                    .expires_at = 1700000120};
+    (void)snprintf(put.nonce, sizeof(put.nonce), "abcd1234");
+    assert_int_equal(ops->submit(ops->ctx, &put, on_job, &cap), 0);
+    assert_int_equal(pump_until(db, &cap, 1), 0);
+
+    db_result_t got = {0};
+    db_job_t get = {.kind = DB_JOB_CAPTCHA_GET, .id = -100, .user_id = 42};
+    assert_int_equal(ops->submit(ops->ctx, &get, capture_captcha, &got), 0);
+    for (int i = 0; i < 20000 && got.status != 1; ++i) {
+        db_pump(db);
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 1000000};
+        nanosleep(&ts, NULL);
+    }
+    assert_int_equal(got.status, 1);
+    assert_int_equal(got.captcha_found, 1);
+    assert_string_equal(got.captcha[0].nonce, "abcd1234");
+    assert_int_equal(got.captcha[0].message_id, 7);
+
+    db_job_t del = {.kind = DB_JOB_CAPTCHA_DEL, .id = -100, .user_id = 42};
+    assert_int_equal(ops->submit(ops->ctx, &del, on_job, &cap), 0);
+    assert_int_equal(pump_until(db, &cap, 2), 0);
+    assert_int_equal(query_scalar(path, "SELECT count(*) FROM pending_captcha"), 0);
+
+    db_destroy(db);
+    unlink(path);
+}
+
+static void test_captcha_expire_lists_due(void **state)
+{
+    (void)state;
+    char path[32];
+    assert_int_equal(make_db_path(path, sizeof(path)), 0);
+    db_config_t cfg = {.path = path};
+    db_t *db = db_create(&cfg);
+    const db_ops_t *ops = db_ops(db);
+    capture_t cap = {0};
+
+    db_job_t due = {
+        .kind = DB_JOB_CAPTCHA_PUT, .id = -100, .user_id = 1, .message_id = 7, .expires_at = 1000};
+    (void)snprintf(due.nonce, sizeof(due.nonce), "aaaa");
+    db_job_t later = {
+        .kind = DB_JOB_CAPTCHA_PUT, .id = -100, .user_id = 2, .message_id = 8, .expires_at = 9000};
+    (void)snprintf(later.nonce, sizeof(later.nonce), "bbbb");
+    assert_int_equal(ops->submit(ops->ctx, &due, on_job, &cap), 0);
+    assert_int_equal(ops->submit(ops->ctx, &later, on_job, &cap), 0);
+    assert_int_equal(pump_until(db, &cap, 2), 0);
+
+    db_result_t res = {0};
+    db_job_t exp = {.kind = DB_JOB_CAPTCHA_EXPIRE, .now_unix = 2000};
+    assert_int_equal(ops->submit(ops->ctx, &exp, capture_expired, &res), 0);
+    for (int i = 0; i < 20000 && res.status != 1; ++i) {
+        db_pump(db);
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 1000000};
+        nanosleep(&ts, NULL);
+    }
+    assert_int_equal(res.status, 1);
+    /* Only the row whose deadline (1000) is <= 2000 is returned. */
+    assert_int_equal(res.captcha_count, 1);
+    assert_int_equal(res.captcha[0].user_id, 1);
+
+    db_destroy(db);
+    unlink(path);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -648,6 +846,10 @@ int main(void)
         cmocka_unit_test(test_settings_get_defaults_when_absent),
         cmocka_unit_test(test_settings_set_round_trip),
         cmocka_unit_test(test_settings_log_chat_round_trip),
+        cmocka_unit_test(test_settings_automod_columns_round_trip),
+        cmocka_unit_test(test_blacklist_add_list_delete),
+        cmocka_unit_test(test_captcha_put_get_delete),
+        cmocka_unit_test(test_captcha_expire_lists_due),
         cmocka_unit_test(test_bad_args),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);

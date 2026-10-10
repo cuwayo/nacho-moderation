@@ -36,10 +36,17 @@ implementation progresses; the binding rules live in [`SPEC.md`](SPEC.md).
 > (`src/cmd_warn.c`), the settings/welcome/rules/reload commands and the
 > `/settings` inline-keyboard panel (`src/cmd_settings.c`), the per-chat settings
 > service with a TTL cache (`src/settings.c`), join-time welcome delivery, the
-> moderation log, and inline-keyboard callback routing (`src/router.c`). Automod
-> (locks, blacklist, antiflood) and captcha arrive in M6.
+> moderation log, and inline-keyboard callback routing (`src/router.c`).
+>
+> **Implemented in M6:** automated moderation (`src/automod.c`) — locks, the
+> word/regex blacklist and antiflood, run on every group message before command
+> dispatch in the SPEC section 5.3 order; join verification (`src/captcha.c`) with
+> an inline "I'm human" button and a timeout sweep; the automod configuration
+> commands `/lock /unlock /blacklist /antiflood /captcha` (`src/cmd_automod.c`); a
+> message classifier in `src/tg_types.c`; and an injectable random source in
+> `src/util.c`.
 
-## Module map (M1–M5)
+## Module map (M1–M6)
 
 | Module | Responsibility |
 |---|---|
@@ -54,19 +61,21 @@ implementation progresses; the binding rules live in [`SPEC.md`](SPEC.md).
 | `api_pool` | Keep-alive connection pool, request queue, rate-limit gating, retries, dispatch timer |
 | `tg_api` | API client facade, method wrappers, JSON parsing, injectable `tg_api_ops_t` seam |
 | `polling` | `getUpdates` long-poll loop and offset tracking |
-| `tg_types` | Parse `getUpdates` batches into bounded Update/Message/User/Chat structs |
-| `router` | Parse `/command`, resolve target (reply / numeric / `@username`), fetch the admin list, check permissions, dispatch handlers |
+| `tg_types` | Parse `getUpdates` batches into bounded Update/Message/User/Chat structs, with entities and content flags |
+| `router` | Parse `/command`, resolve target (reply / numeric / `@username`), fetch the admin list, check permissions, run automod, dispatch handlers |
+| `automod` | Locks, blacklist and antiflood over every group message (SPEC section 5.3); an injectable clock drives the flood window |
+| `captcha` | Join verification: restrict + prompt + timeout sweep (SPEC section 5.4) |
 | `cmd_ctx` | Reference-counted command invocation; reply and action-recording hooks |
 | `cmd_*` | One handler per command; build the API body, issue it, reply |
 | `cmd_util` | Shared `[duration] [reason]` parsing and the target guard |
-| `settings` | Per-chat policy TTL cache over the DB worker (warns/welcome/rules/log) |
+| `settings` | Per-chat policy TTL cache over the DB worker (warns/welcome/rules/log/automod) |
 | `expiry` | 30 s sweeper that lifts expired temp bans/mutes (SPEC section 5.6) |
-| `db` | SQLite worker thread, MPSC job queue, migrations, upserts, actions, eventfd handoff |
-| `cache` | In-memory hash map with TTL (admin cache and other hot data) |
+| `db` | SQLite worker thread, MPSC job queue, migrations, upserts, actions, blacklist, captcha, eventfd handoff |
+| `cache` | In-memory hash map with TTL (admin cache, flood windows, blacklist, other hot data) |
 | `perms` | Role/right checks and the per-chat administrator cache |
 | `commands` | Command table (`commands.def`), lookup, `/help` rendering, `setMyCommands` |
 | `metrics` | Runtime counters (SIGUSR1 dump) |
-| `util` | Arena allocator, string builder, duration parser, HTML escape, injectable clock, logger |
+| `util` | Arena allocator, string builder, duration parser, HTML escape, injectable clock/random, logger |
 
 ## Component overview
 
@@ -103,6 +112,56 @@ worker appends to the response queue and writes the eventfd; the read's completi
 runs `db_pump()` (which fires the callbacks on the loop thread) and re-arms the
 next read. This is the same worker-thread + eventfd pattern as `resolver`, and it
 keeps the main thread free of any SQLite or file syscall (ADR 0003).
+
+## Automated moderation (M6)
+
+Every group message runs through `automod_handle_message()` **before** command
+dispatch, in the order the SPEC fixes (section 5.3):
+
+```mermaid
+flowchart TD
+    MSG[Group message] --> S[settings_get + perms_admins_get]
+    S -->|admin / owner / sudo| SKIP[skip]
+    S --> L[locks: automod_locked_content]
+    L -->|match| DEL[deleteMessage + actions row + log]
+    L --> B[blacklist: word / regex]
+    B -->|match| DEL2[deleteMessage + warn + auto-action]
+    B --> F[antiflood: sliding window]
+    F -->|over threshold| MUTE[restrictChatMember + delete burst]
+```
+
+The lock classifier and the flood-window arithmetic are pure and unit-tested; the
+antiflood window lives in memory (per `chat_id:user_id`) and is advanced by the
+injected monotonic clock, so tests are deterministic. A blacklist regex is
+compiled with PCRE2 under match/depth limits so a hostile pattern cannot stall the
+loop (SPEC section 10).
+
+## Join captcha (M6)
+
+```mermaid
+sequenceDiagram
+    participant TG as Telegram
+    participant R as Router
+    participant C as Captcha
+    participant DB as DB worker
+    TG->>R: chat_member (join)
+    R->>C: captcha_begin
+    C->>TG: restrictChatMember (no send)
+    C->>TG: sendMessage (I'm human button)
+    TG-->>C: sendMessage result (message_id)
+    C->>DB: pending_captcha PUT (nonce, deadline)
+    TG->>R: callback_query cap:chat:user:nonce
+    R->>C: captcha_handle_callback
+    C->>DB: pending_captcha GET
+    alt correct user + nonce
+        C->>TG: restrictChatMember (lift) + deleteMessage
+        C->>DB: pending_captcha DEL
+        C->>R: on_welcome (deliver welcome)
+    else wrong user / nonce
+        C->>TG: answerCallbackQuery (rejected)
+    end
+    Note over C: periodic sweep: deadline passed<br/>-> kick (ban + unban) + delete prompt
+```
 
 ## Error-handling policy
 

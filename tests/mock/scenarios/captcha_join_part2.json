@@ -1,0 +1,17 @@
+{
+  "_comment": "M6 captcha, part 2: run against the DB written by captcha_join (part 1), where the captcha is enabled. A user joins the supergroup, so the bot immediately restricts them (restrictChatMember) and sends an inline-keyboard 'I'm human' prompt (sendMessage with reply_markup). The empty trailing batch keeps polling after the join is consumed.",
+  "updates": [
+    [
+      {
+        "update_id": 1,
+        "chat_member": {
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "from": {"id": 300, "is_bot": false, "first_name": "Newbie"},
+          "old_chat_member": {"status": "left", "user": {"id": 300, "is_bot": false, "first_name": "Newbie"}},
+          "new_chat_member": {"status": "member", "user": {"id": 300, "is_bot": false, "first_name": "Newbie"}}
+        }
+      }
+    ],
+    []
+  ]
+}

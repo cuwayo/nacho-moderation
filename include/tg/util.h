@@ -75,6 +75,47 @@ int64_t wall_now_unix(const wall_clock_ops_t *c);
 /** @brief Real wall clock backed by time(). */
 extern const wall_clock_ops_t util_wall_clock_real;
 
+/* --- Injectable random source (SPEC-ADDENDUM-TOOLCHAIN A3) ----------------- */
+
+/**
+ * @brief Injectable random source for the captcha nonce.
+ *
+ * The captcha challenge needs an unpredictable nonce, but a logic module must
+ * never read /dev/urandom or block the event loop, and tests need determinism
+ * (SPEC-ADDENDUM-TOOLCHAIN A3). Modules take a @ref random_ops_t; the production
+ * implementation lives in util.c (`util_random_ops_real`) and is a seeded
+ * userspace PRNG whose seed is drawn once at startup by @ref util_random_seed.
+ */
+typedef struct {
+    uint64_t (*next_u64)(void *ctx); /**< Returns the next 64 random bits. */
+    void *ctx;                       /**< Opaque context for @ref next_u64. */
+} random_ops_t;
+
+/**
+ * @brief Draw the next 64 random bits, or 0 if @p r is NULL.
+ *
+ * @param[in] r Random source, or NULL.
+ *
+ * @return 64 random bits.
+ * @thread_safety Depends on the implementation.
+ */
+uint64_t util_random_u64(const random_ops_t *r);
+
+/** @brief Real random source: a splitmix64 PRNG seeded by util_random_seed(). */
+extern const random_ops_t util_random_ops_real;
+
+/**
+ * @brief Seed the real random source.
+ *
+ * Draws entropy from `getrandom()` (falling back to a time/address mix when it is
+ * unavailable) and initializes the PRNG behind @ref util_random_ops_real. Call
+ * once at startup, before the event loop runs, so the loop itself never performs
+ * a blocking entropy read.
+ *
+ * @thread_safety Call once, before any thread uses the random source.
+ */
+void util_random_seed(void);
+
 /* --- Arena allocator (per-update scratch memory, SPEC section 9) ----------- */
 
 /** @brief A block in an arena's free list. */

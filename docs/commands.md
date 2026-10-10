@@ -811,4 +811,185 @@ Replies with the rules set by `/setrules`, or a note that none are set.
 - If no rules have been set, the bot replies that none are set.
 - The rules text is HTML-escaped before sending, so angle brackets and ampersands
   are shown literally rather than interpreted as markup.
+
+### /lock
+
+Lock a message type (delete + log).
+
+- **Usage:** `/lock <type> [type...]`
+- **Minimum role:** ROLE_ADMIN
+- **Caller right:** RIGHT_DELETE
+- **Bot right:** RIGHT_DELETE
+- **Flags:** CMDF_GROUP_ONLY
+
+# /lock
+
+Lock one or more message types: matching messages from non-administrators are
+deleted and recorded in the moderation log (SPEC section 5.3).
+
+## Examples
+
+```text
+/lock links
+/lock media stickers
+/lock forwards, polls
+```
+
+## Edge cases
+
+- Lock types are `links`, `media`, `stickers`, `forwards`, `polls`, `invites`,
+  `bots` and `commands`; several may be given separated by spaces or commas.
+- The lock bitmask is stored per chat in the `chats.locks` column and persists
+  across restarts.
+- Administrators, the owner and sudo users are never affected; the bot's own
+  messages and service messages are ignored.
+- `links` covers URL/text-link/mention entities; `invites` also matches
+  `t.me/joinchat` and `t.me/+` links in the text; `commands` covers a leading
+  slash command from a non-administrator.
+- An unknown lock type is rejected without changing anything.
+- The bot must hold `can_delete_messages`.
+
+### /unlock
+
+Unlock a message type.
+
+- **Usage:** `/unlock <type> [type...]`
+- **Minimum role:** ROLE_ADMIN
+- **Caller right:** RIGHT_DELETE
+- **Bot right:** RIGHT_DELETE
+- **Flags:** CMDF_GROUP_ONLY
+
+# /unlock
+
+Unlock one or more previously locked message types (SPEC section 5.3).
+
+## Examples
+
+```text
+/unlock links
+/unlock media stickers
+```
+
+## Edge cases
+
+- Unlocking a type that is not currently locked is a no-op (the bitmask is
+  simply cleared).
+- The remaining locked types are unaffected.
+- Lock types are the same set as `/lock`: `links`, `media`, `stickers`,
+  `forwards`, `polls`, `invites`, `bots`, `commands`.
+- An unknown lock type is rejected without changing anything.
+- The bot must hold `can_delete_messages`.
+
+### /blacklist
+
+Manage the chat word/regex blacklist.
+
+- **Usage:** `/blacklist add|del|list <word|/regex/>`
+- **Minimum role:** ROLE_ADMIN
+- **Caller right:** RIGHT_DELETE
+- **Bot right:** RIGHT_DELETE
+- **Flags:** CMDF_GROUP_ONLY
+
+# /blacklist
+
+Manage the chat's word/regex blacklist: matching messages are deleted, the
+sender is warned, and the configured warn action fires at the warn limit
+(SPEC sections 5.2, 5.3).
+
+## Examples
+
+```text
+/blacklist add scam
+/blacklist add /free\s+crypto/i
+/blacklist del scam
+/blacklist list
+```
+
+## Edge cases
+
+- `add` and `del` take a single word or a regular expression wrapped in slashes
+  (`/.../ `); a plain word matches as a case-insensitive substring.
+- Regex patterns are compiled with PCRE2 under match and depth limits, so a
+  pathological pattern cannot stall the event loop; an invalid pattern never
+  matches.
+- Messages are matched against the text, or the caption for media messages.
+- A match deletes the message, records a `blacklist` action and adds a warning;
+  at the chat's `warn_limit` the configured `warn_action` is applied and the
+  warnings are cleared, exactly like `/warn`.
+- `list` shows the stored patterns (regular expressions are shown between
+  slashes).
+- The bot must hold `can_delete_messages` and `can_restrict_members`.
+
+### /antiflood
+
+Set the flood threshold, or turn it off.
+
+- **Usage:** `/antiflood <messages> <seconds>|off`
+- **Minimum role:** ROLE_ADMIN
+- **Caller right:** RIGHT_RESTRICT
+- **Bot right:** RIGHT_RESTRICT
+- **Flags:** CMDF_GROUP_ONLY
+
+# /antiflood
+
+Configure flood control: when a user sends more than the threshold within the
+window, they are muted and their burst messages are deleted (SPEC section 5.3).
+
+## Examples
+
+```text
+/antiflood 5 10
+/antiflood 10 30
+/antiflood off
+```
+
+## Edge cases
+
+- The arguments are `<messages> <seconds>`: more than `<messages>` messages
+  within a sliding `<seconds>`-second window trips the flood control.
+- The window is counted in memory per `(chat_id, user_id)` and never persisted;
+  a restart clears all counters.
+- On a trip the user is muted for 5 minutes (with a temporary restriction that
+  the expiry sweeper later lifts) and the messages still in the window are
+  deleted.
+- `/antiflood off` sets the threshold to 0, disabling the check.
+- Administrators, the owner and sudo users are exempt.
+- The bot must hold `can_restrict_members` and `can_delete_messages`.
+
+### /captcha
+
+Enable or disable join verification.
+
+- **Usage:** `/captcha on|off`
+- **Minimum role:** ROLE_ADMIN
+- **Caller right:** RIGHT_RESTRICT
+- **Bot right:** RIGHT_RESTRICT
+- **Flags:** CMDF_GROUP_ONLY
+
+# /captcha
+
+Enable or disable join verification: new members must press an "I'm human"
+button within a timeout or they are removed (SPEC section 5.4).
+
+## Examples
+
+```text
+/captcha on
+/captcha off
+```
+
+## Edge cases
+
+- With the captcha enabled a new member is immediately restricted (they cannot
+  send messages), sent an inline "I'm human" button and recorded in
+  `pending_captcha` with a deadline (default 120 seconds).
+- Pressing the button as the challenged user lifts the restriction, deletes the
+  prompt and delivers the welcome message if one is configured.
+- Pressing the button as any other user is rejected (the callback data carries
+  the challenged user id, checked against the presser).
+- When the deadline passes a periodic sweep kicks the member (ban then unban, so
+  they may rejoin) and deletes the prompt.
+- Both supergroup (`chat_member`) and basic-group (`new_chat_members`) joins are
+  handled.
+- The bot must hold `can_restrict_members`.
 <!-- END GENERATED: commands-reference -->

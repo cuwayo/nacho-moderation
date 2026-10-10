@@ -71,6 +71,14 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(
         integration-m5 PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
                                 ENVIRONMENT "NM_TGBOT_BIN=$<TARGET_FILE:tgbot>")
+
+    # M6: automod (locks, antiflood) and the join captcha (A5.3).
+    add_test(
+        NAME integration-m6
+        COMMAND ${Python3_EXECUTABLE} tests/integration/test_integration_m6.py)
+    set_tests_properties(
+        integration-m6 PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                                ENVIRONMENT "NM_TGBOT_BIN=$<TARGET_FILE:tgbot>")
 else()
     message(STATUS "Python3 interpreter not found; docs/SSOT ctest entries disabled")
 endif()

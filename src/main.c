@@ -23,6 +23,8 @@
 #include "tables.h"
 #include "tables_json.h"
 #include "tg/api_pool.h"
+#include "tg/automod.h"
+#include "tg/captcha.h"
 #include "tg/db.h"
 #include "tg/expiry.h"
 #include "tg/loop.h"
@@ -301,10 +303,33 @@ static int run_services(loop_t *loop, tg_api_t *api, const config_values_t *cfg,
         return 1;
     }
 
+    /* Automated moderation (locks, blacklist, antiflood) and join captcha
+     * (SPEC sections 5.3, 5.4). Both are wired into the router below. */
+    automod_config_t amcfg = {.api = tg_api_ops(api),
+                              .db = db_ops(db),
+                              .settings = settings,
+                              .perms = perms,
+                              .clock = &util_clock_ops_real,
+                              .wall = &util_wall_clock_real,
+                              .bot_id = me->id};
+    automod_t *automod = automod_create(&amcfg);
+
+    captcha_config_t ccfg = {.ops = loop_ops(loop),
+                             .api = tg_api_ops(api),
+                             .db = db_ops(db),
+                             .settings = settings,
+                             .wall = &util_wall_clock_real,
+                             .random = &util_random_ops_real,
+                             .on_welcome = router_on_captcha_welcome,
+                             .on_welcome_ctx = NULL /* set once the router exists */};
+    captcha_t *captcha = captcha_create(&ccfg);
+
     router_config_t rcfg = {.api = tg_api_ops(api),
                             .db = db_ops(db),
                             .perms = perms,
                             .settings = settings,
+                            .automod = automod,
+                            .captcha = captcha,
                             .clock = &util_clock_ops_real,
                             .wall = &util_wall_clock_real,
                             .bot_id = me->id,
@@ -312,10 +337,17 @@ static int run_services(loop_t *loop, tg_api_t *api, const config_values_t *cfg,
     router_t *router = router_create(&rcfg);
     if (router == NULL) {
         util_log(LOG_ERROR, "main", "failed to create the router");
+        captcha_destroy(captcha);
+        automod_destroy(automod);
         settings_destroy(settings);
         perms_destroy(perms);
         db_destroy(db);
         return 1;
+    }
+    /* The captcha welcome callback needs the router; wire it now that both
+     * exist. The captcha service copies the config, so update its view. */
+    if (captcha != NULL) {
+        captcha_set_welcome_ctx(captcha, router);
     }
 
     /* Lift expired temp bans/mutes every 30 s (SPEC section 5.6). */
@@ -327,6 +359,10 @@ static int run_services(loop_t *loop, tg_api_t *api, const config_values_t *cfg,
     if (expiry == NULL || expiry_start(expiry) != 0) {
         util_log(LOG_WARN, "main", "expiry sweeper unavailable");
     }
+    /* Kick members that fail the captcha (SPEC section 5.4). */
+    if (captcha == NULL || captcha_start(captcha) != 0) {
+        util_log(LOG_WARN, "main", "captcha sweeper unavailable");
+    }
 
     /* Register the command menu with Telegram (best effort). */
     char smc[4096];
@@ -337,8 +373,11 @@ static int run_services(loop_t *loop, tg_api_t *api, const config_values_t *cfg,
 
     run_polling(loop, api, cfg, db, router);
 
+    captcha_stop(captcha);
+    captcha_destroy(captcha);
     expiry_stop(expiry);
     expiry_destroy(expiry);
+    automod_destroy(automod);
     router_destroy(router);
     settings_destroy(settings);
     perms_destroy(perms);
@@ -369,6 +408,10 @@ static int run_bot(const cli_options_t *opts)
         return 2;
     }
     apply_log_level(opts, &cfg);
+
+    /* Seed the captcha nonce PRNG once, before the loop (no blocking entropy
+     * read on the event loop; SPEC-ADDENDUM-TOOLCHAIN A3). */
+    util_random_seed();
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));

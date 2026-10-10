@@ -1,0 +1,31 @@
+{
+  "_comment": "M6 automod locks. Batch 1: the admin locks media (the settings write is asynchronous, so the offending message must arrive in a later batch). Batch 2: a non-admin posts a photo; the bot deletes it (deleteMessage). The empty trailing batch keeps polling after the messages are consumed.",
+  "updates": [
+    [
+      {
+        "update_id": 1,
+        "message": {
+          "message_id": 10,
+          "date": 1700000000,
+          "from": {"id": 200, "is_bot": false, "first_name": "Admin", "username": "admin"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "/lock media"
+        }
+      }
+    ],
+    [
+      {
+        "update_id": 2,
+        "message": {
+          "message_id": 11,
+          "date": 1700000001,
+          "from": {"id": 300, "is_bot": false, "first_name": "Spammer", "username": "spammer"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "caption": "look at this",
+          "photo": [{"file_id": "x", "file_unique_id": "y", "width": 1, "height": 1}]
+        }
+      }
+    ],
+    []
+  ]
+}

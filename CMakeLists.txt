@@ -86,6 +86,9 @@ add_library(
     src/cmd_msg.c
     src/cmd_warn.c
     src/cmd_settings.c
+    src/cmd_automod.c
+    src/automod.c
+    src/captcha.c
     src/expiry.c)
 target_include_directories(
     libtgbot_core

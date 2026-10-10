@@ -1,0 +1,18 @@
+{
+  "_comment": "M6 captcha, part 1: the admin enables join verification. Run against a persistent DB so captcha_join_part2 can drive a join that the bot must challenge. The empty trailing batch keeps polling after the command is consumed.",
+  "updates": [
+    [
+      {
+        "update_id": 1,
+        "message": {
+          "message_id": 10,
+          "date": 1700000000,
+          "from": {"id": 200, "is_bot": false, "first_name": "Admin", "username": "admin"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "/captcha on"
+        }
+      }
+    ],
+    []
+  ]
+}

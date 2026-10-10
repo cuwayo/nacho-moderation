@@ -28,6 +28,11 @@
 #include "tg/tg_types.h"
 #include "tg/util.h"
 
+/** @brief Forward declaration: the automod service (see tg/automod.h). */
+typedef struct automod automod_t;
+/** @brief Forward declaration: the captcha service (see tg/captcha.h). */
+typedef struct captcha captcha_t;
+
 /** @brief Maximum length of a command name (matches the S2 limit). */
 #define ROUTER_CMD_NAME_MAX 32
 /** @brief Maximum length of a raw target token (`\@username` or numeric id). */
@@ -48,6 +53,8 @@ typedef struct {
     const db_ops_t *db;           /**< DB seam (user/chat upserts, target lookup). */
     perms_t *perms;               /**< Permission engine. */
     settings_t *settings;         /**< Per-chat settings service (may be NULL). */
+    automod_t *automod;           /**< Automod service (may be NULL). */
+    captcha_t *captcha;           /**< Captcha service (may be NULL). */
     const clock_ops_t *clock;     /**< Injected monotonic clock (unused for now). */
     const wall_clock_ops_t *wall; /**< Injected wall clock (expiry/until_date). */
     int64_t bot_id;               /**< The bot's own user id. */
@@ -145,5 +152,20 @@ int router_handle(router_t *r, const tg_update_t *upd);
  * @thread_safety Loop thread only.
  */
 void router_destroy(router_t *r);
+
+/**
+ * @brief Deliver a join welcome (the callback the captcha service invokes).
+ *
+ * Wired into @ref captcha_config_t::on_welcome by the runtime so the captcha
+ * module never needs the welcome template: after a member passes the challenge
+ * (or immediately, when the captcha is disabled) the router fetches the chat
+ * policy and sends the rendered welcome (SPEC section 5.4).
+ *
+ * @param[in] ctx  The @ref router_t.
+ * @param[in] chat Chat joined.
+ * @param[in] user Joining user.
+ * @thread_safety Loop thread only.
+ */
+void router_on_captcha_welcome(void *ctx, const tg_chat_t *chat, const tg_user_t *user);
 
 #endif /* TG_ROUTER_H */

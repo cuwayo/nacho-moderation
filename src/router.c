@@ -18,6 +18,8 @@
 #include "commands.h"
 #include "tables.h"
 #include "tg/api_pool.h"
+#include "tg/automod.h"
+#include "tg/captcha.h"
 #include "tg/cmd_ctx.h"
 #include "tg/cmd_settings.h"
 #include "tg/db.h"
@@ -644,8 +646,16 @@ static int handle_message(router_t *r, const tg_update_t *upd)
     /* Upsert the sender/chat for every non-service message. */
     upsert_message(r, msg);
 
+    /* Automated moderation runs on every group message, before command dispatch
+     * (SPEC section 5.3): locks -> blacklist -> antiflood. It may delete the
+     * message, so it runs before the command path but never blocks it. */
+    if (r->cfg.automod != NULL) {
+        (void)automod_handle_message(r->cfg.automod, msg);
+    }
+
     /* Basic-group joins arrive as a service message with new_chat_members (SPEC
-     * section 5.4); supergroup joins arrive as chat_member. Welcome each joiner. */
+     * section 5.4); supergroup joins arrive as chat_member. Greet each joiner
+     * (through the captcha flow when it is enabled). */
     for (unsigned i = 0; i < msg->new_member_count; ++i) {
         maybe_welcome(r, &msg->chat, &msg->new_members[i]);
     }
@@ -901,11 +911,16 @@ static void on_panel_admins(const perms_admins_t *admins, int status, void *user
  */
 static int handle_callback(router_t *r, const tg_update_t *upd)
 {
+    /* A captcha "I'm human" button press (SPEC section 5.4) is handled by the
+     * captcha service before the settings panel is considered. */
+    if (r->cfg.captcha != NULL && captcha_handle_callback(r->cfg.captcha, upd) != 0) {
+        return 0;
+    }
     int64_t chat = 0;
     int64_t owner = 0;
     const char *key = NULL;
     if (cmd_settings_parse_callback(upd->callback_data, &chat, &owner, &key) != 0) {
-        return 0; /* not a settings callback (e.g. a captcha button, M6) */
+        return 0; /* not a settings callback */
     }
     if (!upd->callback_has_message) {
         return 0; /* nothing to edit */
@@ -1080,7 +1095,7 @@ static void on_welcome_settings(const chat_settings_t *settings, int status, voi
  * @param[in] chat Chat joined.
  * @param[in] user Joining user (bots are ignored).
  */
-static void maybe_welcome(router_t *r, const tg_chat_t *chat, const tg_user_t *user)
+static void deliver_welcome(router_t *r, const tg_chat_t *chat, const tg_user_t *user)
 {
     if (user->is_bot || user->id == 0 || r->cfg.settings == NULL) {
         return;
@@ -1095,6 +1110,35 @@ static void maybe_welcome(router_t *r, const tg_chat_t *chat, const tg_user_t *u
     if (settings_get(r->cfg.settings, chat->id, on_welcome_settings, w) != 0) {
         free(w);
     }
+}
+
+/**
+ * @brief Deliver the welcome for a join, routing through the captcha when wired.
+ *
+ * With the captcha enabled the member is challenged instead; the captcha service
+ * calls back into @ref router_on_captcha_welcome once the challenge is passed
+ * (or immediately, when the captcha is disabled). Without a captcha service the
+ * welcome is delivered directly (SPEC section 5.4).
+ *
+ * @param[in] r    Router.
+ * @param[in] chat Chat joined.
+ * @param[in] user Joining user (bots are ignored).
+ */
+static void maybe_welcome(router_t *r, const tg_chat_t *chat, const tg_user_t *user)
+{
+    if (user->is_bot || user->id == 0) {
+        return;
+    }
+    if (r->cfg.captcha != NULL) {
+        (void)captcha_begin(r->cfg.captcha, chat, user);
+        return;
+    }
+    deliver_welcome(r, chat, user);
+}
+
+void router_on_captcha_welcome(void *ctx, const tg_chat_t *chat, const tg_user_t *user)
+{
+    deliver_welcome(ctx, chat, user);
 }
 
 /* --- Public API ------------------------------------------------------------ */

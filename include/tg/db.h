@@ -47,6 +47,14 @@
 #define DB_MAX_EXPIRED 32u
 /** @brief Maximum number of warns returned by one warn-list query (one page). */
 #define DB_MAX_WARNS 16u
+/** @brief Maximum length of a blacklist pattern. */
+#define DB_PATTERN_MAX 256
+/** @brief Maximum number of blacklist patterns returned by one list query. */
+#define DB_MAX_BLACKLIST 16u
+/** @brief Maximum number of due captcha rows returned by one sweep. */
+#define DB_MAX_CAPTCHA 16u
+/** @brief Maximum length of a captcha nonce (hex string). */
+#define DB_NONCE_MAX 17
 
 /**
  * @brief The per-chat moderation policy stored in the `chats` row (SPEC section 6).
@@ -59,6 +67,11 @@ typedef struct {
     int64_t log_chat_id; /**< Moderation log chat id (0 = disabled). */
     int warn_limit;      /**< Warnings before the auto-action (0 = never auto-act). */
     int welcome_enabled; /**< 1 if the join welcome is enabled. */
+    int captcha_enabled; /**< 1 if join verification (captcha) is enabled. */
+    int captcha_timeout; /**< Seconds a new member has to solve the captcha (0 = default). */
+    int flood_limit;     /**< Messages allowed per @c flood_window (0 = antiflood off). */
+    int flood_window;    /**< Antiflood sliding-window length in seconds (0 = default). */
+    unsigned locks;      /**< Bitmask of locked message types (LOCK_BIT per locks.def). */
     char warn_action[DB_WARN_ACTION_MAX]; /**< "ban" | "mute" | "kick" ("" = default mute). */
     char welcome_text[DB_TEXT_MAX];       /**< Welcome template with placeholders. */
     char rules_text[DB_TEXT_MAX];         /**< Chat rules text ("" if unset). */
@@ -75,12 +88,17 @@ typedef struct {
 /* Settings fields addressed by db_job_t.settings_mask (DB_JOB_SETTINGS_SET).
  * Exactly one bit is set per job: the value goes in db_job_t.value (numeric
  * settings) or db_job_t.text (text settings). */
-#define DB_SET_WARN_LIMIT 0x01u   /**< db_job_t.value -> chats.warn_limit. */
-#define DB_SET_WARN_ACTION 0x02u  /**< db_job_t.text  -> chats.warn_action. */
-#define DB_SET_LOG_CHAT 0x04u     /**< db_job_t.value -> chats.log_chat_id. */
-#define DB_SET_WELCOME_ON 0x08u   /**< db_job_t.value -> chats.welcome_enabled. */
-#define DB_SET_WELCOME_TEXT 0x10u /**< db_job_t.text  -> chats.welcome_text. */
-#define DB_SET_RULES_TEXT 0x20u   /**< db_job_t.text  -> chats.rules_text. */
+#define DB_SET_WARN_LIMIT 0x01u      /**< db_job_t.value -> chats.warn_limit. */
+#define DB_SET_WARN_ACTION 0x02u     /**< db_job_t.text  -> chats.warn_action. */
+#define DB_SET_LOG_CHAT 0x04u        /**< db_job_t.value -> chats.log_chat_id. */
+#define DB_SET_WELCOME_ON 0x08u      /**< db_job_t.value -> chats.welcome_enabled. */
+#define DB_SET_WELCOME_TEXT 0x10u    /**< db_job_t.text  -> chats.welcome_text. */
+#define DB_SET_RULES_TEXT 0x20u      /**< db_job_t.text  -> chats.rules_text. */
+#define DB_SET_CAPTCHA_ON 0x40u      /**< db_job_t.value -> chats.captcha_enabled. */
+#define DB_SET_CAPTCHA_TIMEOUT 0x80u /**< db_job_t.value -> chats.captcha_timeout. */
+#define DB_SET_FLOOD_LIMIT 0x100u    /**< db_job_t.value -> chats.flood_limit. */
+#define DB_SET_FLOOD_WINDOW 0x200u   /**< db_job_t.value -> chats.flood_window. */
+#define DB_SET_LOCKS 0x400u          /**< db_job_t.value -> chats.locks (bitmask). */
 
 /** @brief Which operation a @ref db_job_t performs. */
 typedef enum {
@@ -94,8 +112,15 @@ typedef enum {
     DB_JOB_WARN_REMOVE_LAST,      /**< Delete the newest `warns` row for (chat, user). */
     DB_JOB_WARN_LIST,             /**< Fetch a user's `warns` rows into @ref db_result_t.warns. */
     DB_JOB_WARN_RESET,            /**< Delete every `warns` row for (chat, user). */
-    DB_JOB_SETTINGS_GET, /**< Read the `chats` policy row into @ref db_result_t.settings. */
-    DB_JOB_SETTINGS_SET  /**< Masked `UPDATE chats` for one settings field. */
+    DB_JOB_SETTINGS_GET,   /**< Read the `chats` policy row into @ref db_result_t.settings. */
+    DB_JOB_SETTINGS_SET,   /**< Masked `UPDATE chats` for one settings field. */
+    DB_JOB_BLACKLIST_ADD,  /**< Insert a `blacklist` pattern; `is_regex` in db_job_t.value. */
+    DB_JOB_BLACKLIST_DEL,  /**< Delete a `blacklist` pattern for a chat. */
+    DB_JOB_BLACKLIST_LIST, /**< Fetch a chat's `blacklist` patterns into the result. */
+    DB_JOB_CAPTCHA_PUT,    /**< Insert/replace a `pending_captcha` row. */
+    DB_JOB_CAPTCHA_GET,    /**< Read one `pending_captcha` row (by chat + user). */
+    DB_JOB_CAPTCHA_DEL,    /**< Delete one `pending_captcha` row (by chat + user). */
+    DB_JOB_CAPTCHA_EXPIRE  /**< Fetch `pending_captcha` rows whose deadline has passed. */
 } db_job_kind_t;
 
 /**
@@ -120,12 +145,15 @@ typedef struct {
     int64_t now_unix;               /**< Cutoff for DB_JOB_EXPIRE_ACTIONS. */
     int64_t value;                  /**< Numeric setting value (DB_JOB_SETTINGS_SET). */
     unsigned settings_mask;         /**< Which chats column to write (DB_SET_* bit). */
+    int64_t message_id;             /**< captcha prompt message id (DB_JOB_CAPTCHA_PUT). */
     char username[DB_USERNAME_MAX]; /**< users.username, or the lookup key. */
     char first_name[DB_FIRST_NAME_MAX]; /**< users.first_name. */
     char title[DB_TITLE_MAX];           /**< chats.title. */
     char chat_type[DB_CHAT_TYPE_MAX];   /**< chats.type. */
     char action[DB_ACTION_MAX];         /**< actions.action ("ban"/"mute"). */
     char reason[DB_REASON_MAX];         /**< actions.reason / warns.reason. */
+    char pattern[DB_PATTERN_MAX];       /**< blacklist.pattern. */
+    char nonce[DB_NONCE_MAX];           /**< pending_captcha.nonce. */
     char text[DB_TEXT_MAX];             /**< Text setting value (DB_JOB_SETTINGS_SET). */
 } db_job_t;
 
@@ -137,6 +165,21 @@ typedef struct {
     char action[DB_ACTION_MAX]; /**< Action name ("ban"/"mute"). */
 } db_expired_action_t;
 
+/** @brief One blacklist pattern (a @ref DB_JOB_BLACKLIST_LIST row). */
+typedef struct {
+    char pattern[DB_PATTERN_MAX]; /**< Word or regex. */
+    int is_regex;                 /**< 1 if @ref pattern is a regular expression. */
+} db_blacklist_t;
+
+/** @brief One pending captcha row (a @ref DB_JOB_CAPTCHA_EXPIRE row). */
+typedef struct {
+    int64_t chat_id;          /**< Chat the challenge lives in. */
+    int64_t user_id;          /**< User who must solve it. */
+    int64_t message_id;       /**< Captcha prompt message id (0 if none). */
+    char nonce[DB_NONCE_MAX]; /**< Anti-forgery nonce. */
+    int64_t deadline;         /**< Unix seconds the challenge expires. */
+} db_captcha_t;
+
 /**
  * @brief Outcome of a DB job.
  *
@@ -145,12 +188,17 @@ typedef struct {
  * once per completed job (the worker heap-allocates it, the loop copies it out).
  */
 typedef struct {
-    int status;             /**< 0 on success, negative @ref err_class_t otherwise. */
-    int64_t i64;            /**< Scalar result (user id / warn count, else 0). */
-    unsigned expired_count; /**< Entries in @ref expired (DB_JOB_EXPIRE_ACTIONS only). */
-    unsigned warn_count;    /**< Entries in @ref warns (DB_JOB_WARN_LIST only). */
+    int status;               /**< 0 on success, negative @ref err_class_t otherwise. */
+    int64_t i64;              /**< Scalar result (user id / warn count, else 0). */
+    unsigned expired_count;   /**< Entries in @ref expired (DB_JOB_EXPIRE_ACTIONS only). */
+    unsigned warn_count;      /**< Entries in @ref warns (DB_JOB_WARN_LIST only). */
+    unsigned blacklist_count; /**< Entries in @ref blacklist (DB_JOB_BLACKLIST_LIST only). */
+    unsigned captcha_count;   /**< Entries in @ref captcha (DB_JOB_CAPTCHA_EXPIRE only). */
+    int captcha_found;        /**< 1 if DB_JOB_CAPTCHA_GET found a row (@ref captcha[0]). */
     db_expired_action_t expired[DB_MAX_EXPIRED]; /**< Due actions from an expiry sweep. */
     db_warn_t warns[DB_MAX_WARNS];               /**< Rows from a warn-list query. */
+    db_blacklist_t blacklist[DB_MAX_BLACKLIST];  /**< Rows from a blacklist-list query. */
+    db_captcha_t captcha[DB_MAX_CAPTCHA];        /**< Due/fetched captcha rows. */
     chat_settings_t settings;                    /**< Policy row (DB_JOB_SETTINGS_GET only). */
 } db_result_t;
 

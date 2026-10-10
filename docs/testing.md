@@ -41,6 +41,12 @@ limit triggers the configured action; a persisted welcome is delivered on join
 answered and re-rendered with `answerCallbackQuery` + `editMessageText`. Scenarios
 live in `tests/mock/scenarios/{warn_limit_action,welcome_join,welcome_join_part2,settings_panel}.json`.
 
+M6 adds `tests/integration/test_integration_m6.py`: a locked media type is deleted
+while plain text is not; an antiflood burst mutes the sender and deletes the burst;
+enabling the captcha then a join restricts the member and sends an inline-keyboard
+prompt; and a captcha callback pressed by the wrong user is rejected. Scenarios
+live in `tests/mock/scenarios/{automod_locks,automod_antiflood,captcha_join,captcha_join_part2,captcha_wrong_user}.json`.
+
 ## Fuzz tests
 
 libFuzzer harnesses under `tests/fuzz/`. CI runs each target for 60 s per PR and

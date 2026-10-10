@@ -92,6 +92,79 @@ static void parse_chat(yyjson_val *v, tg_chat_t *out)
 }
 
 /**
+ * @brief Parse a message's `entities`/`caption_entities` array into @p out.
+ *
+ * Only the first @ref TG_MAX_ENTITIES entries are kept; the rest are ignored
+ * (bounds, SPEC section 9). Missing/null entities leave the count at zero.
+ *
+ * @param[in]  v   Entity array value (may be NULL).
+ * @param[out] out Message receiving the entities.
+ */
+static void parse_entities(yyjson_val *v, tg_message_t *out)
+{
+    if (v == NULL || !yyjson_is_arr(v)) {
+        return;
+    }
+    size_t idx = 0;
+    size_t max = 0;
+    yyjson_val *item = NULL;
+    yyjson_arr_foreach(v, idx, max, item)
+    {
+        if (out->entity_count >= TG_MAX_ENTITIES) {
+            break;
+        }
+        if (!yyjson_is_obj(item)) {
+            continue;
+        }
+        tg_entity_t *e = &out->entities[out->entity_count];
+        copy_str(e->type, sizeof(e->type), yyjson_obj_get(item, "type"));
+        e->offset = get_i64(item, "offset");
+        e->length = get_i64(item, "length");
+        out->entity_count++;
+    }
+}
+
+/**
+ * @brief Set the TG_CONTENT_* flags describing a message's body.
+ *
+ * Detects media attachments, stickers, animations, forwards and polls from the
+ * presence of their Telegram keys (SPEC section 5.3, locks). `text` is not
+ * considered content here (a text-only message has no flags).
+ *
+ * @param[in]  v   Message JSON object.
+ * @param[out] out Message receiving the flags.
+ */
+static void parse_content_flags(yyjson_val *v, tg_message_t *out)
+{
+    static const char *const media[] = {"photo", "video",      "document", "audio",
+                                        "voice", "video_note", "contact",  "location",
+                                        "venue", "dice",       "game"};
+    for (size_t i = 0; i < sizeof(media) / sizeof(media[0]); ++i) {
+        if (yyjson_obj_get(v, media[i]) != NULL) {
+            out->content_flags |= TG_CONTENT_MEDIA;
+            break;
+        }
+    }
+    if (yyjson_obj_get(v, "sticker") != NULL) {
+        out->content_flags |= TG_CONTENT_STICKER;
+    }
+    if (yyjson_obj_get(v, "animation") != NULL) {
+        out->content_flags |= TG_CONTENT_ANIMATION;
+    }
+    /* A forward is either the modern `forward_origin` or the legacy
+     * `forward_from`/`forward_from_chat`/`forward_sender_name` keys. */
+    if (yyjson_obj_get(v, "forward_origin") != NULL || yyjson_obj_get(v, "forward_from") != NULL ||
+        yyjson_obj_get(v, "forward_from_chat") != NULL ||
+        yyjson_obj_get(v, "forward_sender_name") != NULL ||
+        yyjson_obj_get(v, "forward_date") != NULL) {
+        out->content_flags |= TG_CONTENT_FORWARD;
+    }
+    if (yyjson_obj_get(v, "poll") != NULL) {
+        out->content_flags |= TG_CONTENT_POLL;
+    }
+}
+
+/**
  * @brief Parse a Telegram Message object.
  *
  * A message without a `from` member is treated as a service message (joins,
@@ -111,6 +184,12 @@ static void parse_message(yyjson_val *v, tg_message_t *out)
     parse_user(yyjson_obj_get(v, "from"), &out->from);
     parse_chat(yyjson_obj_get(v, "chat"), &out->chat);
     copy_str(out->text, sizeof(out->text), yyjson_obj_get(v, "text"));
+    copy_str(out->caption, sizeof(out->caption), yyjson_obj_get(v, "caption"));
+    parse_entities(yyjson_obj_get(v, "entities"), out);
+    if (out->entity_count == 0) {
+        parse_entities(yyjson_obj_get(v, "caption_entities"), out);
+    }
+    parse_content_flags(v, out);
 
     yyjson_val *reply = yyjson_obj_get(v, "reply_to_message");
     if (reply != NULL && yyjson_is_obj(reply)) {

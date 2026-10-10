@@ -45,3 +45,8 @@ X(SETWELCOME, "setwelcome", ROLE_ADMIN, RIGHT_CHANGE_INFO, RIGHT_NONE, CMDF_GROU
 X(WELCOME, "welcome", ROLE_ADMIN, RIGHT_CHANGE_INFO, RIGHT_NONE, CMDF_GROUP_ONLY, "on|off", "Enable or disable the join welcome", cmd_welcome)
 X(SETRULES, "setrules", ROLE_ADMIN, RIGHT_CHANGE_INFO, RIGHT_NONE, CMDF_GROUP_ONLY, "<text>", "Set the chat rules", cmd_setrules)
 X(RULES, "rules", ROLE_ANYONE, RIGHT_NONE, RIGHT_NONE, CMDF_GROUP_ONLY, "", "Show the chat rules", cmd_rules)
+X(LOCK, "lock", ROLE_ADMIN, RIGHT_DELETE, RIGHT_DELETE, CMDF_GROUP_ONLY, "<type> [type...]", "Lock a message type (delete + log)", cmd_lock)
+X(UNLOCK, "unlock", ROLE_ADMIN, RIGHT_DELETE, RIGHT_DELETE, CMDF_GROUP_ONLY, "<type> [type...]", "Unlock a message type", cmd_unlock)
+X(BLACKLIST, "blacklist", ROLE_ADMIN, RIGHT_DELETE, RIGHT_DELETE, CMDF_GROUP_ONLY, "add|del|list <word|/regex/>", "Manage the chat word/regex blacklist", cmd_blacklist)
+X(ANTIFLOOD, "antiflood", ROLE_ADMIN, RIGHT_RESTRICT, RIGHT_RESTRICT, CMDF_GROUP_ONLY, "<messages> <seconds>|off", "Set the flood threshold, or turn it off", cmd_antiflood)
+X(CAPTCHA, "captcha", ROLE_ADMIN, RIGHT_RESTRICT, RIGHT_RESTRICT, CMDF_GROUP_ONLY, "on|off", "Enable or disable join verification", cmd_captcha)

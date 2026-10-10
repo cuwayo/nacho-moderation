@@ -61,6 +61,11 @@ The available commands are listed below.
 | `/welcome` | ROLE_ADMIN | `on|off` | Enable or disable the join welcome |
 | `/setrules` | ROLE_ADMIN | `<text>` | Set the chat rules |
 | `/rules` | ROLE_ANYONE |  | Show the chat rules |
+| `/lock` | ROLE_ADMIN | `<type> [type...]` | Lock a message type (delete + log) |
+| `/unlock` | ROLE_ADMIN | `<type> [type...]` | Unlock a message type |
+| `/blacklist` | ROLE_ADMIN | `add|del|list <word|/regex/>` | Manage the chat word/regex blacklist |
+| `/antiflood` | ROLE_ADMIN | `<messages> <seconds>|off` | Set the flood threshold, or turn it off |
+| `/captcha` | ROLE_ADMIN | `on|off` | Enable or disable join verification |
 <!-- END GENERATED: commands-table -->
 
 # SIGNALS
