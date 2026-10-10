@@ -2,8 +2,9 @@
 """test_integration_getme.py - drive the real loop against the mock server (A5.3).
 
 Starts tests/mock/mock_tg_server.py, points the built `tgbot` at it over plain
-HTTP via the environment (no TLS, no real token), and asserts a successful getMe.
-Skipped when the binary is unavailable.
+HTTP via the environment (no TLS, no real token), and asserts the getMe probe
+succeeds. The default run then polls forever, so the process is stopped with
+SIGTERM and must exit 0. Skipped when the binary is unavailable.
 
 Run: python3 tests/integration/test_integration_getme.py
 Env: NM_TGBOT_BIN overrides the binary path.
@@ -68,22 +69,44 @@ class GetMeIntegrationTest(unittest.TestCase):
                 time.sleep(0.1)
         self.fail("mock server did not start")
 
-    def test_getme_against_mock_server(self) -> None:
+    def _run_until_getme(self) -> subprocess.Popen:
         env = dict(os.environ)
         env["BOT_TOKEN"] = "123456:TEST"
         env["API_BASE"] = f"http://127.0.0.1:{self.port}"
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [str(BINARY)],
             env=env,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=30,
         )
-        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
-        self.assertIn("getMe ok", proc.stdout)
-        self.assertIn("mock_bot", proc.stdout)
+        return proc
 
-        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+    def test_getme_against_mock_server(self) -> None:
+        proc = self._run_until_getme()
+        self.addCleanup(proc.kill)
+
+        # Wait for the getMe probe line, then stop the (now polling) bot.
+        assert proc.stdout is not None
+        deadline = time.time() + 20
+        line = ""
+        while time.time() < deadline:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            if "getMe ok" in line:
+                break
+        self.assertIn("getMe ok", line, msg=f"stdout so far: {line!r}")
+
+        proc.terminate()
+        try:
+            rc = proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            self.fail("tgbot did not exit after SIGTERM")
+        self.assertEqual(rc, 0)
+
+        calls = [json.loads(x) for x in self.log.read_text().splitlines()]
         self.assertTrue(any(c["method"] == "getMe" for c in calls))
 
 

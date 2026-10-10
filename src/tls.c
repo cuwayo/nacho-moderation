@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+/** @brief One TLS session: an SSL object with memory BIOs (no socket). */
 struct tls_session {
     SSL_CTX *ctx;    /**< Context (one per session in M1; pooled later). */
     SSL *ssl;        /**< SSL object with memory BIOs. */
@@ -25,7 +26,13 @@ struct tls_session {
     int established; /**< 1 once the handshake completed. */
 };
 
-/* Map an SSL error to a pump step. */
+/**
+ * @brief Map an SSL error to a pump step.
+ *
+ * @param[in] s   Session.
+ * @param[in] ret The SSL_* call's return value.
+ * @return TLS_WANT_READ, TLS_WANT_WRITE, or TLS_ERROR.
+ */
 static tls_step_t step_from_ssl(tls_session_t *s, int ret)
 {
     switch (SSL_get_error(s->ssl, ret)) {

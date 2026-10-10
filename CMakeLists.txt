@@ -62,6 +62,12 @@ add_library(
     src/net_conn.c
     src/tls.c
     src/resolver.c
+    src/api_methods.c
+    src/rate_limit.c
+    src/api_retry.c
+    src/metrics.c
+    src/api_pool.c
+    src/polling.c
     src/tg_api.c
     src/commands.c
     src/config.c

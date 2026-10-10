@@ -214,6 +214,59 @@ static void test_peer_close_before_response_fails(void **state)
     assert_int_equal(f->cb_status, -ECONNRESET);
 }
 
+/* Run one full request/response cycle on an already-connected plain connection. */
+static void serve_request(fixture_t *f, const char *req, const char *resp)
+{
+    assert_int_equal(conn_send_request(f->conn, req, strlen(req)), 0);
+    assert_int_equal(fake_ring_submit_all(&f->ring), 1);
+    op_t *send_op = fake_ring_find(&f->ring, OP_SEND);
+    assert_int_equal(fake_ring_complete(&f->ring, send_op, (int)strlen(req)), 0);
+    assert_int_equal(fake_ring_submit_all(&f->ring), 1);
+    op_t *recv_op = fake_ring_find(&f->ring, OP_RECV);
+    assert_int_equal(fake_ring_fill_and_complete(&f->ring, recv_op, resp, strlen(resp)), 0);
+}
+
+static void test_keep_alive_reuse_second_request(void **state)
+{
+    fixture_t *f = *state;
+    f->conn = conn_create(f->ops, &fake_net, &util_clock_ops_real, NULL, conn_callback, f);
+    struct sockaddr_in addr = make_addr();
+    assert_int_equal(conn_connect(f->conn, (struct sockaddr *)&addr, sizeof(addr), 0), 0);
+    assert_int_equal(fake_ring_submit_all(&f->ring), 2);
+    assert_int_equal(fake_ring_complete(&f->ring, fake_ring_find(&f->ring, OP_CONNECT), 0), 0);
+
+    serve_request(f, "GET /a HTTP/1.1\r\nHost: x\r\n\r\n",
+                  "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    assert_int_equal(conn_state(f->conn), CONN_DONE);
+    assert_int_equal(f->cb_calls, 1);
+    assert_true(conn_keep_alive(f->conn));
+
+    /* Reuse the same socket for a second request: no new connect is submitted. */
+    assert_int_equal(conn_reuse_begin(f->conn), 0);
+    assert_int_equal(conn_state(f->conn), CONN_HTTP_WRITE);
+    serve_request(f, "GET /b HTTP/1.1\r\nHost: x\r\n\r\n",
+                  "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nbye");
+    assert_int_equal(f->cb_calls, 2);
+    assert_int_equal(f->cb_status, 0);
+    assert_int_equal(conn_response(f->conn)->body_len, 3);
+    assert_memory_equal(conn_response(f->conn)->body, "bye", 3);
+}
+
+static void test_connection_close_refuses_reuse(void **state)
+{
+    fixture_t *f = *state;
+    f->conn = conn_create(f->ops, &fake_net, &util_clock_ops_real, NULL, conn_callback, f);
+    struct sockaddr_in addr = make_addr();
+    assert_int_equal(conn_connect(f->conn, (struct sockaddr *)&addr, sizeof(addr), 0), 0);
+    assert_int_equal(fake_ring_submit_all(&f->ring), 2);
+    assert_int_equal(fake_ring_complete(&f->ring, fake_ring_find(&f->ring, OP_CONNECT), 0), 0);
+
+    serve_request(f, "GET /a HTTP/1.1\r\n\r\n",
+                  "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\nok");
+    assert_false(conn_keep_alive(f->conn));
+    assert_int_equal(conn_reuse_begin(f->conn), -EPROTO);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -223,6 +276,8 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_short_write_resubmits, setup, teardown),
         cmocka_unit_test_setup_teardown(test_linked_timeout_fails, setup, teardown),
         cmocka_unit_test_setup_teardown(test_peer_close_before_response_fails, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_keep_alive_reuse_second_request, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_connection_close_refuses_reuse, setup, teardown),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

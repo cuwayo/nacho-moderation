@@ -41,6 +41,7 @@ typedef enum {
     TLS_ERROR       /**< Unrecoverable TLS error. */
 } tls_step_t;
 
+/** @brief Opaque TLS session (one SSL object with memory BIOs). */
 typedef struct tls_session tls_session_t;
 
 /**

@@ -150,8 +150,8 @@ Generator: `scripts/docgen.py` (Python 3.10+, stdlib only).
 | C3 | Every non-hidden command has `docs/commands/<name>.md` with sections `Examples` and `Edge cases` (non-empty) |
 | C4 | Every config key has a row in `docs/configuration.md` including type, default, restart flag; no documented key missing from the table; env var names match |
 | C5 | `config/config.example.toml` equals `--dump-config-example` output; it parses with `--check-config`; secrets use placeholder values |
-| C6 | Every TOML snippet in `*.md` fenced as ```` ```toml ```` passes `tgbot --check-config` (unless tagged `toml no-check`) |
-| C7 | Every shell snippet tagged ```` ```bash title="ci" ```` in README parses (`bash -n`) and uses only commands/presets that exist (preset names validated against `CMakePresets.json`) |
+| C6 | Every TOML snippet in `*.md` in a toml fenced block passes `tgbot --check-config` (unless tagged `toml no-check`) |
+| C7 | Every shell snippet in a bash fenced block with the `title="ci"` info string in README parses (`bash -n`) and uses only commands/presets that exist (preset names validated against `CMakePresets.json`) |
 | C8 | `tgbot --help` equals `tests/golden/help.txt`; the same text appears verbatim in `docs/building.md` |
 | C9 | Every method in `api_methods.def` has a handler in `tests/mock/mock_tg_server.py` and is listed in `docs/telegram-api-notes.md` |
 | C10 | Every `/help` command appears in the man page `tgbot.1.scd`; every config key appears in `tgbot.toml.5.scd` |

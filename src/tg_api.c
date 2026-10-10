@@ -1,11 +1,10 @@
 /**
  * @file tg_api.c
- * @brief Minimal Bot API client: getMe over one connection.
+ * @brief Telegram Bot API client facade over the connection pool (SPEC section 4.2).
  *
- * Flow (SPEC §12, M1): parse the base URL -> resolve the host on the resolver
- * worker (signalled via eventfd) -> connect (TLS if https) -> send
- * `GET /bot<token>/getMe` -> parse the JSON reply. The token is inserted only
- * into the request path and never logged.
+ * The client parses its base URL, owns a rate limiter and an @ref api_pool_t, and
+ * exposes method wrappers plus the JSON helpers used by tests. The token is
+ * inserted only into request paths and is never logged.
  *
  * @ingroup api
  */
@@ -17,63 +16,53 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/eventfd.h>
 #include <sys/socket.h>
-#include <unistd.h>
 
 #include <yyjson.h>
 
+#include "api_methods.h"
+#include "tg/api_pool.h"
 #include "tg/errors.h"
-#include "tg/http.h"
 #include "tg/loop.h"
 #include "tg/net_conn.h"
+#include "tg/rate_limit.h"
 #include "tg/resolver.h"
-#include "tg/tls.h"
 #include "tg/util.h"
 
-#define TG_API_TIMEOUT_MS 15000u
-#define TG_API_MAX_URL 512u
+/** @brief Maximum number of allowed update types (SPEC section 4.1). */
+#define TG_ALLOWED_UPDATES_LEN 5
 
+/** @brief The Bot API client: configuration, limiter, pool, and seam. */
 struct tg_api {
-    tg_api_config_t cfg;      /**< Copied configuration. */
-    const loop_ops_t *ops;    /**< Loop vtable. */
-    const net_ops_t *net;     /**< Socket vtable. */
-    const clock_ops_t *clock; /**< Clock vtable. */
-
-    char scheme[8]; /**< "http" or "https". */
-    char host[256]; /**< Host name. */
-    char port[8];   /**< Port string. */
-
-    tg_api_cb cb; /**< User callback. */
-    void *cb_ctx; /**< User callback context. */
-    int status;   /**< Result status. */
-    tg_me_t me;   /**< Parsed identity. */
-
-    int efd;              /**< eventfd for the resolver handoff. */
-    op_t efd_op;          /**< OP_EVENTFD read context. */
-    resolver_t *resolver; /**< In-flight resolver. */
-    conn_t *conn;         /**< In-flight connection. */
+    tg_api_config_t cfg;     /**< Copied configuration. */
+    rate_limiter_t *limiter; /**< Owned rate limiter. */
+    api_pool_t *pool;        /**< Owned connection pool. */
+    tg_api_ops_t ops;        /**< Seam bound to this client. */
 };
 
 /* --- URL parsing ----------------------------------------------------------- */
 
-static int parse_base_url(tg_api_t *a, const char *url)
+int tg_api_parse_base_url(const char *url, char *scheme, size_t scheme_cap, char *host,
+                          size_t host_cap, char *port, size_t port_cap)
 {
+    if (url == NULL || scheme == NULL || host == NULL || port == NULL) {
+        return -EINVAL;
+    }
     const char *p = strstr(url, "://");
     if (p == NULL) {
         return -EINVAL;
     }
     size_t scheme_len = (size_t)(p - url);
-    if (scheme_len == 0 || scheme_len >= sizeof(a->scheme)) {
+    if (scheme_len == 0 || scheme_len >= scheme_cap) {
         return -EINVAL;
     }
-    memcpy(a->scheme, url, scheme_len);
-    a->scheme[scheme_len] = '\0';
+    memcpy(scheme, url, scheme_len);
+    scheme[scheme_len] = '\0';
     p += 3;
 
     const char *slash = strchr(p, '/');
     size_t hostport_len = slash == NULL ? strlen(p) : (size_t)(slash - p);
-    if (hostport_len == 0 || hostport_len >= sizeof(a->host)) {
+    if (hostport_len == 0 || hostport_len >= host_cap) {
         return -EINVAL;
     }
     char hostport[256];
@@ -81,23 +70,61 @@ static int parse_base_url(tg_api_t *a, const char *url)
     hostport[hostport_len] = '\0';
 
     const char *colon = strchr(hostport, ':');
-    const char *default_port = strcmp(a->scheme, "https") == 0 ? "443" : "80";
+    const char *default_port = strcmp(scheme, "https") == 0 ? "443" : "80";
     if (colon != NULL) {
         size_t hl = (size_t)(colon - hostport);
-        if (hl >= sizeof(a->host)) {
+        if (hl >= host_cap) {
             return -EINVAL;
         }
-        memcpy(a->host, hostport, hl);
-        a->host[hl] = '\0';
-        (void)snprintf(a->port, sizeof(a->port), "%s", colon + 1);
+        memcpy(host, hostport, hl);
+        host[hl] = '\0';
+        if (strlen(colon + 1) >= port_cap) {
+            return -EINVAL;
+        }
+        (void)snprintf(port, port_cap, "%s", colon + 1);
     } else {
-        (void)snprintf(a->host, sizeof(a->host), "%s", hostport);
-        (void)snprintf(a->port, sizeof(a->port), "%s", default_port);
+        (void)snprintf(host, host_cap, "%s", hostport);
+        (void)snprintf(port, port_cap, "%s", default_port);
     }
     return 0;
 }
 
-/* --- getMe JSON parsing ---------------------------------------------------- */
+/* --- Response parsing ------------------------------------------------------ */
+
+int tg_api_parse_result(const char *json, size_t len, api_result_t *out)
+{
+    if (json == NULL || out == NULL) {
+        return -EINVAL;
+    }
+    yyjson_doc *doc = yyjson_read(json, len, 0);
+    if (doc == NULL) {
+        return -ERR_PARSE;
+    }
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    yyjson_val *ok = yyjson_obj_get(root, "ok");
+    out->ok = ok != NULL && yyjson_get_bool(ok);
+
+    yyjson_val *code = yyjson_obj_get(root, "error_code");
+    out->error_code = code != NULL ? (int)yyjson_get_sint(code) : 0;
+
+    yyjson_val *desc = yyjson_obj_get(root, "description");
+    out->description[0] = '\0';
+    if (desc != NULL && yyjson_is_str(desc)) {
+        (void)snprintf(out->description, sizeof(out->description), "%s", yyjson_get_str(desc));
+    }
+
+    out->retry_after = 0;
+    yyjson_val *params = yyjson_obj_get(root, "parameters");
+    if (params != NULL) {
+        yyjson_val *retry = yyjson_obj_get(params, "retry_after");
+        if (retry != NULL && yyjson_is_int(retry)) {
+            out->retry_after = (uint64_t)yyjson_get_sint(retry);
+        }
+    }
+
+    yyjson_doc_free(doc);
+    return 0;
+}
 
 int tg_api_parse_me(const char *json, size_t len, tg_me_t *out)
 {
@@ -121,6 +148,7 @@ int tg_api_parse_me(const char *json, size_t len, tg_me_t *out)
         yyjson_doc_free(doc);
         return -ERR_PARSE;
     }
+    out->ok = 1;
 
     yyjson_val *id = yyjson_obj_get(result, "id");
     out->id = id != NULL ? (int64_t)yyjson_get_sint(id) : 0;
@@ -140,149 +168,190 @@ int tg_api_parse_me(const char *json, size_t len, tg_me_t *out)
     return 0;
 }
 
-/* --- Callback plumbing ----------------------------------------------------- */
+/* --- Seam ------------------------------------------------------------------ */
 
-static void finish(tg_api_t *a, int status)
+/**
+ * @brief Adapter implementing @ref tg_api_ops_t::request for a client.
+ *
+ * @param[in] ctx         The @ref tg_api_t.
+ * @param[in] method      API method identifier.
+ * @param[in] body        JSON request body.
+ * @param[in] body_len    Length of @p body.
+ * @param[in] chat_id     Target chat for per-chat rate limiting.
+ * @param[in] deadline_ms Absolute deadline (0 for none).
+ * @param[in] cb          Completion callback.
+ * @param[in] user        Opaque pointer passed to @p cb.
+ *
+ * @return 0 if queued, negative errno on failure.
+ */
+static int seam_request(void *ctx, method_id_t method, const char *body, size_t body_len,
+                        int64_t chat_id, uint64_t deadline_ms, tg_api_cb cb, void *user)
 {
-    a->status = status;
-    if (a->cb != NULL) {
-        a->cb(status, status == 0 ? &a->me : NULL, a->cb_ctx);
-    }
+    tg_api_t *api = ctx;
+    return tg_api_request(api, method, body, body_len, chat_id, deadline_ms, cb, user);
 }
 
-/* --- Connection completion ------------------------------------------------- */
+/* --- Method wrappers ------------------------------------------------------- */
 
-static void on_conn_done(void *ctx, int status)
+int tg_api_request(tg_api_t *api, method_id_t method, const char *body, size_t body_len,
+                   int64_t chat_id, uint64_t deadline_ms, tg_api_cb cb, void *ctx)
 {
-    tg_api_t *a = ctx;
-    if (status != 0) {
-        finish(a, status);
-        return;
+    if (api == NULL) {
+        return -EINVAL;
     }
-    const http_resp_t *resp = conn_response(a->conn);
-    if (resp == NULL || resp->body == NULL) {
-        finish(a, -ERR_PARSE);
-        return;
-    }
-    int rc = tg_api_parse_me(resp->body, resp->body_len, &a->me);
-    finish(a, rc);
+    return api_pool_submit(api->pool, method, body, body_len, chat_id, POOL_CLASS_SHARED,
+                           deadline_ms, (api_pool_cb)cb, ctx);
 }
 
-/* --- Resolver handoff ------------------------------------------------------ */
-
-static void start_connect(tg_api_t *a)
+int tg_api_get_me(tg_api_t *api, tg_api_cb cb, void *ctx)
 {
-    resolver_join(a->resolver);
-    struct addrinfo *res = resolver_take(a->resolver);
-    if (res == NULL) {
-        finish(a, -EHOSTUNREACH);
-        return;
-    }
+    return tg_api_request(api, METHOD_GET_ME, NULL, 0, 0, 0, cb, ctx);
+}
 
-    tls_config_t tls = {.host = a->host, .verify = 1};
-    int use_tls = strcmp(a->scheme, "https") == 0;
-    a->conn = conn_create(a->ops, a->net, a->clock, use_tls ? &tls : NULL, on_conn_done, a);
-    if (a->conn == NULL) {
-        freeaddrinfo(res);
-        finish(a, -ENOMEM);
-        return;
+int tg_api_build_get_updates_body(char *out, size_t cap, int64_t offset, unsigned timeout_s,
+                                  size_t *outlen)
+{
+    if (out == NULL || outlen == NULL) {
+        return -EINVAL;
     }
-    /* Try each resolved address until one connects. M1 uses the first. */
-    int rc = conn_connect(a->conn, res->ai_addr, (socklen_t)res->ai_addrlen, TG_API_TIMEOUT_MS);
-    freeaddrinfo(res);
+    static const char *const allowed[TG_ALLOWED_UPDATES_LEN] = {
+        "message", "edited_message", "callback_query", "chat_member", "my_chat_member"};
+    int n = snprintf(out, cap, "{\"offset\":%lld,\"timeout\":%u,\"allowed_updates\":[",
+                     (long long)offset, timeout_s);
+    if (n < 0 || (size_t)n >= cap) {
+        return -ENOSPC;
+    }
+    size_t off = (size_t)n;
+    for (size_t i = 0; i < TG_ALLOWED_UPDATES_LEN; ++i) {
+        n = snprintf(out + off, cap - off, "%s\"%s\"", i == 0 ? "" : ",", allowed[i]);
+        if (n < 0 || (size_t)n >= cap - off) {
+            return -ENOSPC;
+        }
+        off += (size_t)n;
+    }
+    n = snprintf(out + off, cap - off, "]}");
+    if (n < 0 || (size_t)n >= cap - off) {
+        return -ENOSPC;
+    }
+    off += (size_t)n;
+    *outlen = off;
+    return 0;
+}
+
+int tg_api_get_updates(tg_api_t *api, int64_t offset, unsigned timeout_s, uint64_t deadline_ms,
+                       tg_api_cb cb, void *ctx)
+{
+    if (api == NULL) {
+        return -EINVAL;
+    }
+    char body[256];
+    size_t body_len = 0;
+    int rc = tg_api_build_get_updates_body(body, sizeof(body), offset, timeout_s, &body_len);
     if (rc != 0) {
-        finish(a, rc);
-        return;
+        return rc;
     }
-
-    char path[TG_API_MAX_URL];
-    (void)snprintf(path, sizeof(path), "/bot%s/getMe", a->cfg.token);
-    char req[TG_API_MAX_URL + 256];
-    size_t req_len = 0;
-    if (http_request_build(req, sizeof(req), "GET", path, a->host, a->cfg.user_agent, &req_len) !=
-        0) {
-        finish(a, -ENOSPC);
-        return;
-    }
-    rc = conn_send_request(a->conn, req, req_len);
-    if (rc != 0) {
-        finish(a, rc);
-    }
+    /* The poll uses the dedicated connection so shared traffic never delays it. */
+    return api_pool_submit(api->pool, METHOD_GET_UPDATES, body, body_len, 0, POOL_CLASS_POLLING,
+                           deadline_ms, (api_pool_cb)cb, ctx);
 }
 
-static void on_eventfd(struct op *op, int res)
+void tg_api_pump(tg_api_t *api)
 {
-    tg_api_t *a = op->owner;
-    /* Re-arm the eventfd read for the next worker notification. */
-    (void)a->ops->prep_read_eventfd(a->ops->ctx, &a->efd_op, a->efd);
-    if (res >= 0) {
-        start_connect(a);
+    if (api != NULL) {
+        api_pool_pump(api->pool);
     }
 }
 
-/* --- Public API ------------------------------------------------------------ */
+const tg_api_ops_t *tg_api_ops(tg_api_t *api)
+{
+    return api == NULL ? NULL : &api->ops;
+}
+
+/* --- Lifecycle ------------------------------------------------------------- */
 
 tg_api_t *tg_api_create(const tg_api_config_t *cfg, const loop_ops_t *ops, const net_ops_t *net,
                         const clock_ops_t *clock)
 {
-    if (cfg == NULL || cfg->token == NULL || cfg->base_url == NULL || ops == NULL || net == NULL) {
+    if (cfg == NULL || cfg->token == NULL || cfg->base_url == NULL || ops == NULL || net == NULL ||
+        clock == NULL) {
         return NULL;
     }
-    tg_api_t *a = calloc(1, sizeof(*a));
-    if (a == NULL) {
+    tg_api_t *api = calloc(1, sizeof(*api));
+    if (api == NULL) {
         return NULL;
     }
-    a->cfg = *cfg;
-    a->ops = ops;
-    a->net = net;
-    a->clock = clock;
-    a->efd = -1;
-    if (parse_base_url(a, cfg->base_url) != 0) {
-        free(a);
+    api->cfg = *cfg;
+    if (api->cfg.pool_size == 0) {
+        api->cfg.pool_size = 4;
+    }
+
+    char scheme[8];
+    char host[256];
+    char port[8];
+    if (tg_api_parse_base_url(cfg->base_url, scheme, sizeof(scheme), host, sizeof(host), port,
+                              sizeof(port)) != 0) {
+        free(api);
         return NULL;
     }
-    a->efd_op = (op_t){.type = OP_EVENTFD, .owner = a, .on_complete = on_eventfd, .fd = -1};
-    return a;
+
+    api->limiter = rate_limiter_create(clock);
+    if (api->limiter == NULL) {
+        free(api);
+        return NULL;
+    }
+
+    /* Resolve the host once, before the loop starts (SPEC section 4.4: DNS runs
+     * on a worker thread). This startup resolution blocks the main thread only
+     * until the worker finishes, before the event loop is running, which the
+     * non-blocking rule permits (check_blocking.sh traces only after startup).
+     * The result is reused for every connection. */
+    resolver_t *resolver = resolver_start(host, port, -1);
+    if (resolver == NULL) {
+        rate_limiter_destroy(api->limiter);
+        free(api);
+        return NULL;
+    }
+    resolver_join(resolver); /* wait for the worker at startup */
+    struct addrinfo *addr = resolver_take(resolver);
+    resolver_free(resolver);
+    if (addr == NULL) {
+        rate_limiter_destroy(api->limiter);
+        free(api);
+        return NULL;
+    }
+
+    api_pool_config_t pcfg = {
+        .token = cfg->token,
+        .user_agent = cfg->user_agent,
+        .host = host,
+        .use_tls = strcmp(scheme, "https") == 0,
+        .addr = addr->ai_addr,
+        .addr_len = (socklen_t)addr->ai_addrlen,
+        .pool_size = api->cfg.pool_size,
+        .request_timeout_ms = cfg->request_timeout_ms != 0 ? cfg->request_timeout_ms : 15000u,
+        .ops = ops,
+        .net = net,
+        .clock = clock,
+        .limiter = api->limiter,
+    };
+    api->pool = api_pool_create(&pcfg);
+    freeaddrinfo(addr); /* the pool copied the address it needs */
+    if (api->pool == NULL) {
+        rate_limiter_destroy(api->limiter);
+        free(api);
+        return NULL;
+    }
+
+    api->ops = (tg_api_ops_t){.request = seam_request, .ctx = api};
+    return api;
 }
 
-int tg_api_get_me(tg_api_t *a, tg_api_cb cb, void *ctx)
+void tg_api_destroy(tg_api_t *api)
 {
-    if (a == NULL || cb == NULL) {
-        return -EINVAL;
-    }
-    a->cb = cb;
-    a->cb_ctx = ctx;
-
-    a->efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (a->efd < 0) {
-        return -errno;
-    }
-    a->efd_op.fd = a->efd;
-
-    a->resolver = resolver_start(a->host, a->port, a->efd);
-    if (a->resolver == NULL) {
-        close(a->efd);
-        a->efd = -1;
-        return -ENOMEM;
-    }
-
-    /* Arm the eventfd read so the loop wakes when the worker finishes. */
-    int rc = a->ops->prep_read_eventfd(a->ops->ctx, &a->efd_op, a->efd);
-    if (rc != 0) {
-        return rc;
-    }
-    return 0;
-}
-
-void tg_api_destroy(tg_api_t *a)
-{
-    if (a == NULL) {
+    if (api == NULL) {
         return;
     }
-    resolver_free(a->resolver);
-    conn_destroy(a->conn);
-    if (a->efd >= 0) {
-        close(a->efd);
-    }
-    free(a);
+    api_pool_destroy(api->pool);
+    rate_limiter_destroy(api->limiter);
+    free(api);
 }

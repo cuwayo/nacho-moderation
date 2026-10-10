@@ -40,6 +40,13 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(
         integration-getme PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
                                  ENVIRONMENT "NM_TGBOT_BIN=$<TARGET_FILE:tgbot>")
+
+    add_test(
+        NAME integration-polling
+        COMMAND ${Python3_EXECUTABLE} tests/integration/test_integration_polling.py)
+    set_tests_properties(
+        integration-polling PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                                   ENVIRONMENT "NM_TGBOT_BIN=$<TARGET_FILE:tgbot>")
 else()
     message(STATUS "Python3 interpreter not found; docs/SSOT ctest entries disabled")
 endif()

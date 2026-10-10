@@ -7,6 +7,13 @@
 # cmocka is a shared library by default; force a static build for hermetic tests.
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
+# cmocka's doc/CMakeLists.txt creates a `docs` target whenever Doxygen is found,
+# which collides with our own `docs` target (SPEC-ADDENDUM-DOCS D1). Disable
+# Doxygen discovery for the whole vendored subtree so no third-party doc target is
+# created; our top-level find_package(Doxygen) is unaffected (this variable is
+# scoped to this directory and below).
+set(CMAKE_DISABLE_FIND_PACKAGE_Doxygen ON)
+
 # --- cmocka ---------------------------------------------------------------
 set(UNIT_TESTING OFF CACHE BOOL "" FORCE) # do not build cmocka's own tests
 set(WITH_EXAMPLES OFF CACHE BOOL "" FORCE) # do not build cmocka's examples

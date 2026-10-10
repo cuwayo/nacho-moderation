@@ -15,6 +15,7 @@
 
 #include <cmocka.h>
 
+#include "tg/api_pool.h"
 #include "tg/errors.h"
 #include "tg/tg_api.h"
 
@@ -80,6 +81,62 @@ static void test_parse_me_extra_fields_ignored(void **state)
     assert_string_equal(me.username, "a");
 }
 
+static void test_parse_result_ok(void **state)
+{
+    (void)state;
+    const char *json = "{\"ok\":true,\"result\":[]}";
+    api_result_t res = {0};
+    assert_int_equal(tg_api_parse_result(json, strlen(json), &res), 0);
+    assert_true(res.ok);
+    assert_int_equal(res.error_code, 0);
+}
+
+static void test_parse_result_error_with_retry_after(void **state)
+{
+    (void)state;
+    const char *json = "{\"ok\":false,\"error_code\":429,\"description\":\"Too Many Requests: "
+                       "retry later\",\"parameters\":{\"retry_after\":7}}";
+    api_result_t res = {0};
+    assert_int_equal(tg_api_parse_result(json, strlen(json), &res), 0);
+    assert_false(res.ok);
+    assert_int_equal(res.error_code, 429);
+    assert_int_equal(res.retry_after, 7);
+    assert_non_null(strstr(res.description, "Too Many Requests"));
+}
+
+static void test_parse_result_garbage(void **state)
+{
+    (void)state;
+    api_result_t res = {0};
+    assert_int_equal(tg_api_parse_result("not json", 8, &res), -ERR_PARSE);
+    assert_int_equal(tg_api_parse_result(NULL, 0, &res), -EINVAL);
+}
+
+static void test_parse_base_url(void **state)
+{
+    (void)state;
+    char scheme[8];
+    char host[256];
+    char port[8];
+    assert_int_equal(tg_api_parse_base_url("https://api.telegram.org", scheme, sizeof(scheme), host,
+                                           sizeof(host), port, sizeof(port)),
+                     0);
+    assert_string_equal(scheme, "https");
+    assert_string_equal(host, "api.telegram.org");
+    assert_string_equal(port, "443");
+
+    assert_int_equal(tg_api_parse_base_url("http://127.0.0.1:8081", scheme, sizeof(scheme), host,
+                                           sizeof(host), port, sizeof(port)),
+                     0);
+    assert_string_equal(scheme, "http");
+    assert_string_equal(host, "127.0.0.1");
+    assert_string_equal(port, "8081");
+
+    assert_int_equal(tg_api_parse_base_url("nope", scheme, sizeof(scheme), host, sizeof(host), port,
+                                           sizeof(port)),
+                     -EINVAL);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -89,6 +146,10 @@ int main(void)
         cmocka_unit_test(test_parse_me_not_ok),
         cmocka_unit_test(test_parse_me_garbage),
         cmocka_unit_test(test_parse_me_extra_fields_ignored),
+        cmocka_unit_test(test_parse_result_ok),
+        cmocka_unit_test(test_parse_result_error_with_retry_after),
+        cmocka_unit_test(test_parse_result_garbage),
+        cmocka_unit_test(test_parse_base_url),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

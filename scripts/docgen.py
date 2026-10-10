@@ -62,7 +62,10 @@ def render_commands_table(tables: dict) -> str:
         if c["hidden"]:
             continue
         usage = c["usage"] or ""
-        lines.append(f"| `/{c['id']}` | {c['min_role']} | `{usage}` | {c['brief']} |")
+        # Render empty usage without backticks: an empty `` code span is not valid
+        # CommonMark and Doxygen rejects it.
+        usage_cell = f"`{usage}`" if usage else ""
+        lines.append(f"| `/{c['id']}` | {c['min_role']} | {usage_cell} | {c['brief']} |")
     return "\n".join(lines)
 
 

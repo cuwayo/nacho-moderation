@@ -55,12 +55,19 @@ typedef struct op {
 
 /** @brief Injectable ring interface; the real impl wraps liburing, fakes record. */
 typedef struct {
+    /** @brief Prepare an OP_CONNECT SQE. @return 0 or negative errno. */
     int (*prep_connect)(void *ctx, op_t *op, int fd, const struct sockaddr *sa, socklen_t len);
+    /** @brief Prepare an OP_RECV SQE. @return 0 or negative errno. */
     int (*prep_recv)(void *ctx, op_t *op, int fd, void *buf, size_t len);
+    /** @brief Prepare an OP_SEND SQE. @return 0 or negative errno. */
     int (*prep_send)(void *ctx, op_t *op, int fd, const void *buf, size_t len);
+    /** @brief Prepare a standalone OP_TIMEOUT SQE. @return 0 or negative errno. */
     int (*prep_timeout)(void *ctx, op_t *op, uint64_t ms);
+    /** @brief Prepare a linked IORING_OP_LINK_TIMEOUT SQE. @return 0 or negative errno. */
     int (*prep_link_timeout)(void *ctx, op_t *link, uint64_t ms);
+    /** @brief Prepare an eventfd read. @return 0 or negative errno. */
     int (*prep_read_eventfd)(void *ctx, op_t *op, int efd);
+    /** @brief Prepare an OP_CLOSE SQE. @return 0 or negative errno. */
     int (*prep_close)(void *ctx, op_t *op, int fd);
     int (*submit)(void *ctx);                        /**< One submit per loop iteration. */
     int (*wait_cqe)(void *ctx, op_t **op, int *res); /**< Block for one CQE. */

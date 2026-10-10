@@ -19,6 +19,13 @@ Real event loop and io_uring against the Python mock Telegram server
 (`tests/mock/mock_tg_server.py`) over plain HTTP (`api_base = http://127.0.0.1:<port>`)
 and a real SQLite file. Added with M2+.
 
+M2 adds `tests/integration/test_integration_polling.py`: the real `tgbot` is run
+against a scripted mock that injects a 429 on the first `getUpdates`; the test
+asserts the poll is retried at the same offset and then advances past the received
+update id, and that `allowed_updates` is sent explicitly. The mock supports
+scenarios (`tests/mock/scenarios/*.json`) and fault injection (429, 5xx, malformed
+JSON, connection reset), and records every call as JSONL for assertions.
+
 ## Fuzz tests
 
 libFuzzer harnesses under `tests/fuzz/`. CI runs each target for 60 s per PR and
@@ -47,8 +54,8 @@ Thresholds: ≥ 80 % line coverage overall, ≥ 90 % for `http`, `tg_api`
 ## Consistency checks (SSOT)
 
 `scripts/check_consistency.py` verifies that documentation and generated artifacts
-match the tables exported by the binary. Checks C1–C5 are implemented now; C6–C18
-are added as their features land (SPEC-ADDENDUM-SSOT S10).
+match the tables exported by the binary. Checks C1–C5 and C9 are implemented now;
+the rest are added as their features land (SPEC-ADDENDUM-SSOT S10).
 
 | ID | Check | Status |
 |---|---|---|
@@ -57,6 +64,7 @@ are added as their features land (SPEC-ADDENDUM-SSOT S10).
 | C3 | each non-hidden command has a `docs/commands/<name>.md` snippet | implemented |
 | C4 | `docs/configuration.md` documents every config key | implemented |
 | C5 | `config/config.example.toml` matches `--dump-config-example` | implemented |
+| C9 | every `api_methods.def` method has a mock handler and a docs row | implemented |
 | C6–C18 | see SPEC-ADDENDUM-SSOT S7 | pending their features |
 
 ```sh

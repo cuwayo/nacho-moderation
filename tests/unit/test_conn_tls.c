@@ -266,11 +266,58 @@ static void test_tls_roundtrip_response(void **state)
     assert_int_equal(conn_response(f->conn)->body_len, strlen(body));
 }
 
+/* One encrypted request/response cycle on an established connection. */
+static void tls_roundtrip(fx_t *f, const char *req, const char *body)
+{
+    assert_int_equal(conn_send_request(f->conn, req, strlen(req)), 0);
+    assert_int_equal(fake_ring_submit_all(&f->ring), (int)fake_ring_pending_count(&f->ring));
+    assert_true(drain_sends(f) >= 1);
+
+    char plain[512];
+    int n = SSL_read(f->server.ssl, plain, sizeof(plain));
+    assert_true(n > 0);
+    char resp[512];
+    int rlen = snprintf(resp, sizeof(resp), "HTTP/1.1 200 OK\r\nContent-Length: %zu\r\n\r\n%s",
+                        strlen(body), body);
+    assert_true(rlen > 0 && (size_t)rlen < sizeof(resp));
+    (void)SSL_write(f->server.ssl, resp, rlen);
+    f->server.out_len = 0;
+    server_flush(&f->server);
+
+    (void)fake_ring_submit_all(&f->ring);
+    op_t *recv_op = fake_ring_find(&f->ring, OP_RECV);
+    assert_non_null(recv_op);
+    assert_int_equal(
+        fake_ring_fill_and_complete(&f->ring, recv_op, f->server.out, f->server.out_len), 0);
+}
+
+static void test_tls_keep_alive_reuse(void **state)
+{
+    fx_t *f = *state;
+    establish(f);
+    assert_int_equal(conn_state(f->conn), CONN_HTTP_WRITE);
+
+    tls_roundtrip(f, "GET /a HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                  "{\"ok\":true,\"result\":{\"id\":1}}");
+    assert_int_equal(f->cb_calls, 1);
+    assert_true(conn_keep_alive(f->conn));
+
+    /* Reuse the same TLS session for a second request. */
+    assert_int_equal(conn_reuse_begin(f->conn), 0);
+    assert_int_equal(conn_state(f->conn), CONN_HTTP_WRITE);
+    tls_roundtrip(f, "GET /b HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                  "{\"ok\":true,\"result\":{\"id\":2}}");
+    assert_int_equal(f->cb_calls, 2);
+    assert_int_equal(f->cb_status, 0);
+    assert_memory_equal(conn_response(f->conn)->body, "{\"ok\":true,\"result\":{\"id\":2}}", 28);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_tls_handshake_reaches_http_write, setup, teardown),
         cmocka_unit_test_setup_teardown(test_tls_roundtrip_response, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_tls_keep_alive_reuse, setup, teardown),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -46,6 +46,7 @@ typedef enum {
 /** @brief Connection completion callback: @p status is 0 or negative errno. */
 typedef void (*conn_cb)(void *ctx, int status);
 
+/** @brief Opaque connection object (one TCP/TLS connection). */
 typedef struct conn conn_t;
 
 /** @brief Real socket ops backed by the syscalls (production use). */
@@ -119,6 +120,35 @@ const http_resp_t *conn_response(const conn_t *c);
  * @thread_safety Loop thread only.
  */
 conn_state_t conn_state(const conn_t *c);
+
+/**
+ * @brief Report whether the connection may be reused for another request.
+ *
+ * True only after a completed response that advertised keep-alive and delivered
+ * no bytes beyond the end of that response (pipelined data would be lost on
+ * reuse). SPEC section 4.2 keep-alive.
+ *
+ * @param[in] c Connection.
+ *
+ * @return 1 if the connection can serve another request, else 0.
+ * @thread_safety Loop thread only.
+ */
+int conn_keep_alive(const conn_t *c);
+
+/**
+ * @brief Prepare a completed connection for another request on the same socket.
+ *
+ * Frees the previous response, resets the parser and write buffer, and returns
+ * the connection to CONN_HTTP_WRITE with its fd and TLS session intact. The
+ * caller then issues the next request with conn_send_request().
+ *
+ * @param[in,out] c Connection in state CONN_DONE.
+ *
+ * @return 0 on success, -EINVAL if not in CONN_DONE, -EPROTO if the connection
+ *         may not be reused (see conn_keep_alive()).
+ * @thread_safety Loop thread only.
+ */
+int conn_reuse_begin(conn_t *c);
 
 /**
  * @brief Return the socket fd, or -1 if not open.

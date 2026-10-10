@@ -9,7 +9,7 @@
 |---|---|---|
 | API reference from source | **Doxygen >= 1.9.8** | Config in `docs/Doxyfile.in`, processed by CMake `configure_file`. |
 | Diagrams in Doxygen | Graphviz (`dot`) | Call graphs, include graphs, collaboration diagrams. |
-| Diagrams in prose docs | Mermaid (rendered natively by GitHub) | Used in `README.md` and `docs/*.md` only. Doxygen does not render Mermaid, so for diagrams that must appear in the Doxygen site use `@dot` or `@startuml` (PlantUML, optional). |
+| Diagrams in prose docs | Mermaid (rendered natively by GitHub) | Used in `README.md` and `docs/*.md` only. Doxygen does not render Mermaid, so for diagrams that must appear in the Doxygen site use a Doxygen `dot` block or a PlantUML `startuml` block (optional). |
 | Markdown lint | `markdownlint-cli2` | Config `.markdownlint.yaml` committed. |
 | Link checker | `lychee` | Fails CI on dead internal links; external links are warnings only. |
 | Spell check | `codespell` (+ optional `cspell` with a project dictionary) | Same hook as code. |
@@ -65,7 +65,7 @@ README must be readable in under 5 minutes and let a new user go from clone to r
 4. **Requirements**: OS, minimum kernel (>= 5.15, recommended 6.1+), compilers, libraries with versions, with `apt`/`dnf` install one-liners.
 5. **Quick start**: copy-pasteable commands that work on a clean Ubuntu 24.04:
    - clone, configure (`cmake --preset release`), build, run tests
-   - create a bot with @BotFather, obtain token
+   - create a bot with BotFather, obtain token
    - write `config.toml` (minimal example)
    - run the bot, add it to a group, grant admin rights, verify with `/help`
 6. **Configuration**: summary table of the most important keys, link to `docs/configuration.md` for the full list.
@@ -78,7 +78,7 @@ README must be readable in under 5 minutes and let a new user go from clone to r
 13. **License** and **Acknowledgements**.
 
 README rules:
-- Every command in the README must be tested in CI (a `docs-smoke` job executes the quick-start build/test steps verbatim extracted from fenced blocks tagged ```` ```bash title="ci" ````, or an equivalent script kept in sync).
+- Every command in the README must be tested in CI (a `docs-smoke` job executes the quick-start build/test steps verbatim extracted from the bash fenced blocks whose info string is `title="ci"`, or an equivalent script kept in sync).
 - No screenshots as the only source of information; include text alternatives.
 - Use relative links for repo files; no absolute `github.com/<user>/...` links to the same repo.
 - No secrets or real chat/user IDs in examples; use obviously fake values (`123456:ABC-DEF...`, `-1001234567890`).
@@ -134,8 +134,8 @@ PREDEFINED             = DOXYGEN_SHOULD_SKIP_THIS
 ```
 
 Notes:
-- Doxygen must treat `README.md` as the main page, so README links to other docs must work both on GitHub (relative path) and in Doxygen (use `@ref`/`\subpage` only in `docs/index.md`, not in README).
-- Mermaid blocks in `README.md` are wrapped so Doxygen ignores them, or placed only in files excluded from Doxygen (`docs/architecture.md` carries a `@dot` equivalent for the HTML site).
+- Doxygen must treat `README.md` as the main page, so README links to other docs must work both on GitHub (relative path) and in Doxygen (use Doxygen `ref`/`subpage` links only in `docs/index.md`, not in README).
+- Mermaid blocks in `README.md` are wrapped so Doxygen ignores them, or placed only in files excluded from Doxygen (`docs/architecture.md` carries an equivalent Doxygen `dot` diagram for the HTML site).
 
 ## D5. Source Comment Conventions (Doxygen)
 
@@ -192,7 +192,7 @@ Required tags per function: `@brief`, every `@param` with direction `[in]/[out]/
 - Every struct and every field documented (`/**< ... */` trailing comments for fields, including units: ms vs s, bytes, etc.).
 - Every enum value documented.
 - Every public macro documented with `@def` semantics and usage example when non-obvious.
-- State machines (connection, request, captcha) documented with an `@dot` state diagram in the header of the owning module, and every transition in code carries the `/* STATE: X -> Y on event Z */` comment (from the code standards). Use `@io_state` alias to list which io_uring ops are in flight per state.
+- State machines (connection, request, captcha) documented with a Doxygen `dot` state diagram in the header of the owning module, and every transition in code carries the `/* STATE: X -> Y on event Z */` comment (from the code standards). Use the `io_state` alias to list which io_uring ops are in flight per state.
 
 ### Implementation comments
 - Explain **why**, not what. No comments that restate the code.
@@ -207,7 +207,7 @@ Required tags per function: `@brief`, every `@param` with direction `[in]/[out]/
 ## D6. Prose Documentation Requirements
 
 ### docs/architecture.md
-- Component diagram (the one from the main spec, as Mermaid for GitHub and `@dot` for Doxygen).
+- Component diagram (the one from the main spec, as Mermaid for GitHub and a Doxygen `dot` diagram for Doxygen).
 - Sequence diagrams for: update received -> router -> command -> API call -> response -> DB write; captcha flow; rate-limited request with 429; graceful shutdown.
 - Thread model: which thread owns what, how `eventfd` hand-off works, which data is shared and how it is protected.
 - Buffer/memory model: per-update arena, buffer ring, lifetimes of `op_t` contexts.

@@ -18,7 +18,14 @@
 
 /* --- Small helpers --------------------------------------------------------- */
 
-/* Case-insensitive equality for ASCII header names/values. */
+/**
+ * @brief Case-insensitive equality for ASCII header names/values.
+ *
+ * @param[in] a First string.
+ * @param[in] b Second string.
+ * @param[in] n Bytes to compare.
+ * @return 1 if equal ignoring ASCII case, else 0.
+ */
 static int ci_equal(const char *a, const char *b, size_t n)
 {
     for (size_t i = 0; i < n; ++i) {
@@ -37,6 +44,13 @@ static int ci_equal(const char *a, const char *b, size_t n)
     return 1;
 }
 
+/**
+ * @brief Case-insensitive substring test.
+ *
+ * @param[in] hay    Haystack (NUL-terminated).
+ * @param[in] needle Needle (NUL-terminated).
+ * @return 1 if @p needle occurs in @p hay ignoring ASCII case, else 0.
+ */
 static int ci_contains(const char *hay, const char *needle)
 {
     size_t hn = strlen(hay);
@@ -52,7 +66,14 @@ static int ci_contains(const char *hay, const char *needle)
     return 0;
 }
 
-/* Parse a non-negative decimal integer; returns 0 on success. */
+/**
+ * @brief Parse a non-negative decimal integer.
+ *
+ * @param[in]  s   Digits (need not be NUL-terminated).
+ * @param[in]  n   Number of bytes in @p s.
+ * @param[out] out Receives the parsed value.
+ * @return 0 on success, -EINVAL on a non-digit, -ERANGE on overflow.
+ */
 static int parse_u64(const char *s, size_t n, uint64_t *out)
 {
     if (n == 0) {
@@ -72,7 +93,14 @@ static int parse_u64(const char *s, size_t n, uint64_t *out)
     return 0;
 }
 
-/* Parse a hexadecimal chunk size, stopping at any chunk extension (';'). */
+/**
+ * @brief Parse a hexadecimal chunk size, stopping at any chunk extension (';').
+ *
+ * @param[in]  s   Hex digits (need not be NUL-terminated).
+ * @param[in]  n   Number of bytes in @p s.
+ * @param[out] out Receives the parsed value.
+ * @return 0 on success, -EINVAL on a non-hex digit, -ERANGE on overflow.
+ */
 static int parse_hex(const char *s, size_t n, uint64_t *out)
 {
     size_t i = 0;
@@ -104,7 +132,14 @@ static int parse_hex(const char *s, size_t n, uint64_t *out)
     return 0;
 }
 
-/* Append @p n bytes to the decoded body, enforcing the body cap. */
+/**
+ * @brief Append @p n bytes to the decoded body, enforcing the body cap.
+ *
+ * @param[in,out] r   Response parser.
+ * @param[in]     buf Bytes to append.
+ * @param[in]     n   Count.
+ * @return 0 on success, -EPROTO if the body cap is exceeded, -ENOMEM on failure.
+ */
 static int body_append(http_resp_t *r, const char *buf, size_t n)
 {
     if (r->body_len + n > r->max_body) {
@@ -130,6 +165,11 @@ static int body_append(http_resp_t *r, const char *buf, size_t n)
 
 /* --- Header line handling -------------------------------------------------- */
 
+/**
+ * @brief Parse the status line into the response status code.
+ *
+ * @param[in,out] r Parser (state set to HR_HEADERS or HR_ERROR).
+ */
 static void handle_status_line(http_resp_t *r)
 {
     /* Expect "HTTP/1.x <code> ..."; take the first three digits after the space. */
@@ -147,7 +187,12 @@ static void handle_status_line(http_resp_t *r)
     r->state = HR_HEADERS;
 }
 
-/* Apply a "Content-Length: N" header (ignored once chunked framing is known). */
+/**
+ * @brief Apply a "Content-Length: N" header (ignored once chunked framing is known).
+ *
+ * @param[in,out] r     Parser.
+ * @param[in]     value Header value.
+ */
 static void apply_content_length(http_resp_t *r, const char *value)
 {
     uint64_t len = 0;
@@ -161,6 +206,13 @@ static void apply_content_length(http_resp_t *r, const char *value)
     }
 }
 
+/**
+ * @brief Apply one header line to the parser state.
+ *
+ * Recognizes Content-Length, Transfer-Encoding: chunked and Connection.
+ *
+ * @param[in,out] r Parser (line holds the header text).
+ */
 static void handle_header_line(http_resp_t *r)
 {
     char *colon = strchr(r->line, ':');
@@ -190,7 +242,11 @@ static void handle_header_line(http_resp_t *r)
     }
 }
 
-/* Decide the body framing once the header block ends. */
+/**
+ * @brief Decide the body framing once the header block ends.
+ *
+ * @param[in,out] r Parser (state advanced to the body or HR_DONE).
+ */
 static void finish_headers(http_resp_t *r)
 {
     if (r->mode == HTTP_BODY_CHUNKED) {
@@ -230,7 +286,12 @@ void http_resp_free(http_resp_t *r)
     r->body_cap = 0;
 }
 
-/* Act on a completed line, dispatching by the current state. */
+/**
+ * @brief Act on a completed line, dispatching by the current parser state.
+ *
+ * @param[in,out] r Parser (line holds the completed line).
+ * @return 0 to continue, 1 when the response is complete, negative errno on error.
+ */
 static int handle_line(http_resp_t *r)
 {
     switch (r->state) {
@@ -270,7 +331,13 @@ static int handle_line(http_resp_t *r)
     return r->state == HR_DONE ? 1 : 0;
 }
 
-/* Accumulate a byte into the line buffer; act when a full line arrives. */
+/**
+ * @brief Accumulate a byte into the line buffer; act when a full line arrives.
+ *
+ * @param[in,out] r Parser.
+ * @param[in]     c Byte to feed.
+ * @return 0 to continue, 1 when complete, negative errno on error.
+ */
 static int feed_line_byte(http_resp_t *r, char c)
 {
     if (r->line_len + 1u >= sizeof(r->line)) {
@@ -290,7 +357,13 @@ static int feed_line_byte(http_resp_t *r, char c)
     return handle_line(r);
 }
 
-/* Process one byte; returns 0 to continue, 1 done, negative errno on error. */
+/**
+ * @brief Process one byte; returns 0 to continue, 1 done, negative errno on error.
+ *
+ * @param[in,out] r Parser.
+ * @param[in]     c Byte to feed.
+ * @return 0 to continue, 1 when complete, negative errno on error.
+ */
 static int feed_byte(http_resp_t *r, char c)
 {
     switch (r->state) {
@@ -385,6 +458,42 @@ int http_request_build(char *out, size_t outcap, const char *method, const char 
     if ((size_t)n >= outcap) {
         return -ENOSPC;
     }
+    *outlen = (size_t)n;
+    return 0;
+}
+
+int http_request_build_post(char *out, size_t outcap, const char *path, const char *host,
+                            const char *user_agent, const char *body, size_t body_len,
+                            size_t *outlen)
+{
+    if (out == NULL || path == NULL || host == NULL || outlen == NULL ||
+        (body == NULL && body_len != 0)) {
+        return -EINVAL;
+    }
+    int n = snprintf(out, outcap,
+                     "POST %s HTTP/1.1\r\n"
+                     "Host: %s\r\n"
+                     "User-Agent: %s\r\n"
+                     "Accept: application/json\r\n"
+                     "Content-Type: application/json\r\n"
+                     "Content-Length: %zu\r\n"
+                     "Connection: keep-alive\r\n"
+                     "\r\n",
+                     path, host, user_agent != NULL ? user_agent : "tgbot", body_len);
+    if (n < 0) {
+        return -EINVAL;
+    }
+    if ((size_t)n >= outcap) {
+        return -ENOSPC;
+    }
+    if (body_len != 0) {
+        if ((size_t)n + body_len >= outcap) {
+            return -ENOSPC;
+        }
+        memcpy(out + n, body, body_len);
+        n += (int)body_len;
+    }
+    out[n] = '\0';
     *outlen = (size_t)n;
     return 0;
 }

@@ -58,3 +58,20 @@ any --error / -ETIME--> CONN_ERROR
 `-EINTR`/`-EAGAIN` resubmit the same op without a state change; a short write
 resubmits the remaining bytes; `-ECANCELED` on the linked timeout is the normal
 cancellation when its companion completed and is ignored.
+
+## M2 request flow (state transitions)
+
+```
+conn: CONN_DONE --conn_reuse_begin--> CONN_HTTP_WRITE   (same fd + TLS session)
+      CONN_DONE --(Connection: close / leftover bytes)--> destroyed, reconnected
+pool: REQ_QUEUED --dispatch (token + slot)--> REQ_INFLIGHT --completion--> REQ_COMPLETED
+      REQ_COMPLETED --429/5xx backoff--> REQ_QUEUED --dispatch--> ...
+      REQ_COMPLETED --terminal--> callback once, slot reused or dropped
+poll: getUpdates issued --reply--> offset = max(update_id)+1 --re-arm--> getUpdates
+```
+
+The pool arms one `OP_TIMEOUT` for the earliest time a queued request could make
+progress (next rate-limiter token or backoff expiry); there is no polling on the
+main thread. The long-poll's own deadline is derived from `polling.timeout`, not
+`api.request_timeout_ms`, so a 30 s poll is not aborted by a shorter request
+timeout.

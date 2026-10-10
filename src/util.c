@@ -21,6 +21,12 @@
 
 /* --- Clock ----------------------------------------------------------------- */
 
+/**
+ * @brief Real monotonic clock: CLOCK_MONOTONIC in milliseconds.
+ *
+ * @param[in] ctx Unused (NULL).
+ * @return Milliseconds since an unspecified epoch.
+ */
 static uint64_t real_now_ms(void *ctx)
 {
     (void)ctx;
@@ -41,9 +47,12 @@ uint64_t clock_now_ms(const clock_ops_t *c)
 
 /* --- Arena ----------------------------------------------------------------- */
 
+/** @brief Arena block alignment (bytes); keeps every allocation suitably aligned. */
 #define ARENA_ALIGN 16u
+/** @brief Round @p n up to the arena block alignment. */
 #define ARENA_ALIGN_UP(n) (((n) + (ARENA_ALIGN - 1u)) & ~(size_t)(ARENA_ALIGN - 1u))
 
+/** @brief One block in the arena's free list. */
 struct arena_block {
     arena_block_t *next; /**< Previous block (NULL for the first). */
     size_t used;         /**< Bytes used in this block. */
@@ -54,6 +63,12 @@ struct arena_block {
     _Alignas(max_align_t) unsigned char data[]; /**< Block storage. */
 };
 
+/**
+ * @brief Allocate a new arena block with @p cap payload bytes.
+ *
+ * @param[in] cap Payload capacity in bytes.
+ * @return The new block, or NULL on out-of-memory.
+ */
 static arena_block_t *arena_block_new(size_t cap)
 {
     arena_block_t *b = malloc(sizeof(*b) + cap);
@@ -155,7 +170,13 @@ int strbuf_init(strbuf_t *b, size_t initial)
     return 0;
 }
 
-/* Ensure room for @p extra more bytes plus the terminating NUL. */
+/**
+ * @brief Ensure room for @p extra more bytes plus the terminating NUL.
+ *
+ * @param[in,out] b     Builder.
+ * @param[in]     extra Additional bytes needed.
+ * @return 0 on success, -ENOMEM on failure.
+ */
 static int strbuf_reserve(strbuf_t *b, size_t extra)
 {
     size_t need = b->len + extra + 1u;
@@ -200,6 +221,14 @@ int strbuf_append_str(strbuf_t *b, const char *s)
     return strbuf_append(b, s, s == NULL ? 0 : strlen(s));
 }
 
+/**
+ * @brief Append a printf-formatted string to the builder.
+ *
+ * @param[in,out] b   Builder.
+ * @param[in]     fmt printf format.
+ * @param[in]     ... Format arguments.
+ * @return 0 on success, -ENOMEM on failure, -EINVAL on bad arguments.
+ */
 int strbuf_appendf(strbuf_t *b, const char *fmt, ...)
 {
     if (b == NULL || fmt == NULL) {
@@ -248,7 +277,14 @@ void strbuf_free(strbuf_t *b)
 
 /* --- Duration parser ------------------------------------------------------- */
 
-/* Multiply with overflow detection into *out. */
+/**
+ * @brief Multiply with overflow detection into @p out.
+ *
+ * @param[in]  a   First factor.
+ * @param[in]  b   Second factor.
+ * @param[out] out Receives @p a * @p b on success.
+ * @return 0 on success, -ERANGE on overflow.
+ */
 static int mul_overflow(int64_t a, int64_t b, int64_t *out)
 {
     if (a != 0 && b > INT64_MAX / a) {
@@ -313,6 +349,12 @@ int util_parse_duration(const char *s, int64_t *out_seconds)
 /* --- HTML escaping --------------------------------------------------------- */
 
 /* Return the HTML entity for @p c, or NULL if it needs no escaping. */
+/**
+ * @brief Return the HTML entity for a character, or NULL if it needs no escaping.
+ *
+ * @param[in] c Character to test.
+ * @return The replacement entity, or NULL.
+ */
 static const char *html_entity(char c)
 {
     switch (c) {
@@ -362,8 +404,15 @@ int util_html_escape(const char *in, size_t inlen, char *out, size_t outcap, siz
 
 /* --- Logger ---------------------------------------------------------------- */
 
+/** @brief Current minimum log level (messages below it are suppressed). */
 static log_level_t g_log_level = LOG_INFO;
 
+/**
+ * @brief Return the lowercase name of a log level.
+ *
+ * @param[in] level Level.
+ * @return A static string ("error", "warn", "info", "debug", or "?").
+ */
 static const char *level_name(log_level_t level)
 {
     switch (level) {
@@ -385,6 +434,14 @@ void util_log_set_level(log_level_t level)
     g_log_level = level;
 }
 
+/**
+ * @brief printf-style logging that takes a va_list (see util.h).
+ *
+ * @param[in] level  Severity.
+ * @param[in] module Module name (short, lowercase).
+ * @param[in] fmt    printf format.
+ * @param[in] ap     Format argument list.
+ */
 void util_vlog(log_level_t level, const char *module, const char *fmt, va_list ap)
 {
     if (level > g_log_level) {
@@ -403,6 +460,14 @@ void util_vlog(log_level_t level, const char *module, const char *fmt, va_list a
     (void)fputc('\n', stderr);
 }
 
+/**
+ * @brief Log one structured line to stderr (see util.h).
+ *
+ * @param[in] level  Severity.
+ * @param[in] module Module name (short, lowercase).
+ * @param[in] fmt    printf format.
+ * @param[in] ...    Format arguments.
+ */
 void util_log(log_level_t level, const char *module, const char *fmt, ...)
 {
     va_list ap;

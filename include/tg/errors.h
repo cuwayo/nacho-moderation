@@ -13,9 +13,11 @@
 
 /** @brief Error classes, one per errors.def row. */
 typedef enum {
+/** @cond */
 #define E(id, code, level, retry, brief) ERR_##id = (code),
 #include "errors.def"
 #undef E
+    /** @endcond */
 } err_class_t;
 
 #endif /* TG_ERRORS_H */

@@ -5,20 +5,24 @@ I/O runs asynchronously through `liburing` in a single-threaded event loop;
 blocking work (SQLite, DNS) is isolated in worker threads that signal the loop
 through an `eventfd`.
 
-> **Status: M1 — working `getMe` over the io_uring loop.** The build system,
-> sanitizer and coverage presets, single-source-of-truth tables, introspection
-> CLI, and documentation skeleton (M0) are in place, and the single-threaded
-> io_uring event loop, TCP connect, OpenSSL memory-BIO TLS, incremental HTTP
-> client, worker-thread DNS, and a minimal Bot API client that performs `getMe`
-> (M1) are implemented. Later milestones M2–M7 (API pool + rate limiter,
-> update parsing and DB, commands, automod, captcha, webhook) follow in order per
-> `docs/SPEC.md` §12.
+> **Status: M2 — HTTP keep-alive, API pool, rate limiter, retry, `getUpdates`
+> polling.** The build system, sanitizer and coverage presets, single-source-of-truth
+> tables, introspection CLI, and documentation skeleton (M0) are in place; the
+> single-threaded io_uring event loop, TCP connect, OpenSSL memory-BIO TLS,
+> incremental HTTP client, worker-thread DNS, and a minimal Bot API client that
+> performs `getMe` (M1) are implemented; and M2 adds reusable keep-alive
+> connections, a connection pool, a token-bucket rate limiter with 429 handling
+> and exponential backoff, and a `getUpdates` long-poll loop. Later milestones
+> M3–M7 (update parsing and DB, commands, automod, captcha, webhook) follow in
+> order per `docs/SPEC.md` §12.
 
 ## Features (planned)
 
 - Moderation commands: ban, mute, warn, purge, locks, and more.
 - Join captcha, antiflood, and blacklist automod.
 - Fully asynchronous network I/O through `io_uring`.
+- Pooled keep-alive Bot API client with outbound rate limiting and retries.
+- `getUpdates` long-polling (webhook mode in M7).
 - Single source of truth for commands and config keys, checked in CI.
 
 ## Binding specifications
@@ -87,7 +91,7 @@ The command set lives in `src/commands.def`; the table below is generated from i
 <!-- BEGIN GENERATED: commands-table -->
 | Command | Role | Usage | Description |
 |---|---|---|---|
-| `/help` | ROLE_ANYONE | `` | Show available commands |
+| `/help` | ROLE_ANYONE |  | Show available commands |
 <!-- END GENERATED: commands-table -->
 
 See [`docs/commands.md`](docs/commands.md) for the full reference.

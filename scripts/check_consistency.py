@@ -38,6 +38,7 @@ CHECKS = [
     Check("C3", "each non-hidden command has a docs/commands/<name>.md snippet"),
     Check("C4", "configuration.md documents every config key"),
     Check("C5", "config/config.example.toml matches --dump-config-example"),
+    Check("C9", "every api_methods.def method has a mock handler and a docs row"),
 ]
 
 
@@ -207,6 +208,35 @@ def check_c5(root: Path, binary: Path, tables: dict) -> Result:
     return Result("C5", True, "sample matches the generator and validates")
 
 
+def check_c9(root: Path, tables: dict) -> Result:
+    """Every API method has a mock handler and a docs/telegram-api-notes.md row."""
+    methods = [m["method"] for m in tables.get("api_methods", [])]
+    if not methods:
+        return Result("C9", False, "api_methods table is empty")
+
+    mock = root / "tests" / "mock" / "mock_tg_server.py"
+    if not mock.is_file():
+        return Result("C9", False, "tests/mock/mock_tg_server.py is missing", str(mock))
+    mock_text = mock.read_text(encoding="utf-8")
+
+    notes = root / "docs" / "telegram-api-notes.md"
+    if not notes.is_file():
+        return Result("C9", False, "docs/telegram-api-notes.md is missing", str(notes))
+    notes_text = notes.read_text(encoding="utf-8")
+
+    failures = []
+    for m in methods:
+        # A handler is either an explicit branch or a HANDLERS registry entry.
+        if f'"{m}"' not in mock_text:
+            failures.append(f"{m}: no handler in mock_tg_server.py")
+        if f"`{m}`" not in notes_text:
+            failures.append(f"{m}: no row in docs/telegram-api-notes.md")
+
+    if failures:
+        return Result("C9", False, "; ".join(failures))
+    return Result("C9", True, f"{len(methods)} API methods have a mock handler and docs row")
+
+
 # --- Runner ----------------------------------------------------------------
 
 
@@ -257,6 +287,8 @@ def main() -> int:
                 results.append(check_c4(root, tables))
             elif cid == "C5":
                 results.append(check_c5(root, binary, tables))
+            elif cid == "C9":
+                results.append(check_c9(root, tables))
     except ToolError as exc:
         print(f"check_consistency: {exc}", file=sys.stderr)
         return 2

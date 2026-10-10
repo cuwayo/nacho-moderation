@@ -1,8 +1,8 @@
-# ADR NNNN: <short title>
+# ADR NNNN: `short title`
 
 - **Status:** proposed | accepted | superseded by ADR-XXXX
 - **Date:** YYYY-MM-DD
-- **Deciders:** <names>
+- **Deciders:** `names`
 
 ## Context
 

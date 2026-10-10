@@ -117,4 +117,27 @@ void http_resp_free(http_resp_t *r);
 int http_request_build(char *out, size_t outcap, const char *method, const char *path,
                        const char *host, const char *user_agent, size_t *outlen);
 
+/**
+ * @brief Build an HTTP/1.1 POST request with a JSON body into @p out.
+ *
+ * Emits `POST path HTTP/1.1`, Host, User-Agent, Accept, `Content-Type:
+ * application/json`, `Content-Length`, and `Connection: keep-alive`, followed by
+ * the body. Used for every Bot API method call (SPEC section 4.2).
+ *
+ * @param[out] out       Output buffer.
+ * @param[in]  outcap    Capacity of @p out.
+ * @param[in]  path      Request path (e.g. "/bot<token>/sendMessage").
+ * @param[in]  host      Host header value.
+ * @param[in]  user_agent User-Agent header value (NULL for a default).
+ * @param[in]  body      JSON request body (may be NULL only when @p body_len is 0).
+ * @param[in]  body_len  Length of @p body in bytes.
+ * @param[out] outlen    Receives the number of bytes written (excluding NUL).
+ *
+ * @return 0 on success, -ENOSPC if @p out is too small, -EINVAL on bad arguments.
+ * @thread_safety Safe (no shared state).
+ */
+int http_request_build_post(char *out, size_t outcap, const char *path, const char *host,
+                            const char *user_agent, const char *body, size_t body_len,
+                            size_t *outlen);
+
 #endif /* TG_HTTP_H */

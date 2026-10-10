@@ -10,46 +10,70 @@
  */
 #include <errno.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
 #include "cli.h"
 #include "config.h"
+#include "metrics.h"
 #include "tables.h"
 #include "tables_json.h"
+#include "tg/api_pool.h"
 #include "tg/loop.h"
 #include "tg/net_conn.h"
+#include "tg/polling.h"
 #include "tg/tg_api.h"
 #include "tg/util.h"
 #include "tg/version.h"
 
-static volatile sig_atomic_t g_stop;
+static volatile sig_atomic_t g_stop;         /**< Set by a termination signal. */
+static volatile sig_atomic_t g_dump_metrics; /**< Set by SIGUSR1 to dump counters. */
 
+/**
+ * @brief Signal handler: set the stop flag, or the metrics-dump flag for SIGUSR1.
+ *
+ * @param[in] sig Signal number.
+ */
 static void on_signal(int sig)
 {
-    (void)sig;
+    if (sig == SIGUSR1) {
+        g_dump_metrics = 1;
+        return;
+    }
     g_stop = 1;
 }
 
-/* Result of the getMe run. */
+/** @brief Result of the getMe probe. */
 typedef struct {
-    int done;
-    int status;
-    tg_me_t me;
+    volatile int done; /**< Set by on_get_me() when the probe completes. */
+    int status;        /**< Probe status (0 on success). */
+    tg_me_t me;        /**< Parsed identity (valid when status is 0). */
 } run_state_t;
 
-static void on_get_me(int status, const tg_me_t *me, void *ctx)
+/**
+ * @brief getMe completion: record the status and parsed identity.
+ *
+ * @param[in] res API result.
+ * @param[in] ctx The @ref run_state_t to fill.
+ */
+static void on_get_me(const api_result_t *res, void *ctx)
 {
     run_state_t *rs = ctx;
     rs->done = 1;
-    rs->status = status;
-    if (me != NULL) {
-        rs->me = *me;
+    rs->status = res->status;
+    if (res->status == 0 && res->body != NULL) {
+        (void)tg_api_parse_me(res->body, res->body_len, &rs->me);
     }
 }
 
-/* Apply the log level from the CLI flag or config. */
+/**
+ * @brief Apply the log level from the CLI flag or config.
+ *
+ * @param[in] opts Parsed CLI options.
+ * @param[in] cfg  Loaded configuration values.
+ */
 static void apply_log_level(const cli_options_t *opts, const config_values_t *cfg)
 {
     const char *level =
@@ -65,11 +89,25 @@ static void apply_log_level(const cli_options_t *opts, const config_values_t *cf
     }
 }
 
-/* Pump the loop until getMe finishes or a signal arrives. The callback mutates
- * *rs through its own ctx pointer, so this function only reads it. */
-static int pump_until_done(loop_t *loop, const run_state_t *rs)
+/**
+ * @brief Pump the loop until getMe finishes or a signal arrives.
+ *
+ * The callback mutates @p rs through its own ctx pointer, so this function only
+ * reads it.
+ *
+ * @param[in] loop Loop to run.
+ * @param[in] api  API client to pump.
+ * @param[in] rs   Probe state (read-only here).
+ *
+ * @return 0 on completion, negative errno on a loop error.
+ */
+static int pump_until_done(loop_t *loop, tg_api_t *api, const run_state_t *rs)
 {
     while (!rs->done && !g_stop) {
+        tg_api_pump(api);
+        if (rs->done) {
+            break; /* the callback fired during dispatch; no more I/O to wait for */
+        }
         int rc = loop_run_once(loop);
         if (rc < 0) {
             util_log(LOG_ERROR, "main", "loop error: %d", rc);
@@ -80,7 +118,54 @@ static int pump_until_done(loop_t *loop, const run_state_t *rs)
 }
 
 /**
- * @brief Load the config and perform a single getMe through the event loop.
+ * @brief Poll getUpdates until a signal arrives (SPEC section 4.1).
+ *
+ * @param[in] loop Loop to run.
+ * @param[in] api  API client to pump.
+ * @param[in] cfg  Loaded configuration values.
+ */
+static void run_polling(loop_t *loop, tg_api_t *api, const config_values_t *cfg)
+{
+    poller_config_t pcfg = {
+        .ops = tg_api_ops(api),
+        .clock = &util_clock_ops_real,
+        .timeout_s = (unsigned)config_get_int(cfg, CFG_POLLING_TIMEOUT),
+        .on_batch = NULL,
+        .ctx = NULL,
+    };
+    poller_t *poller = poller_create(&pcfg);
+    if (poller == NULL) {
+        util_log(LOG_ERROR, "main", "failed to create poller");
+        return;
+    }
+    if (poller_start(poller) != 0) {
+        util_log(LOG_ERROR, "main", "failed to start polling");
+        poller_destroy(poller);
+        return;
+    }
+
+    util_log(LOG_INFO, "main", "polling for updates (SIGINT/SIGTERM to stop)");
+    while (!g_stop) {
+        if (g_dump_metrics) {
+            g_dump_metrics = 0;
+            metrics_dump(stderr);
+        }
+        tg_api_pump(api);
+        int rc = loop_run_once(loop);
+        if (rc < 0) {
+            util_log(LOG_ERROR, "main", "loop error: %d", rc);
+            break;
+        }
+    }
+    /* Shutdown: stop issuing polls and drop in-flight requests. Full drain of
+     * in-flight requests is completed in M7. */
+    poller_stop(poller);
+    poller_destroy(poller);
+    util_log(LOG_INFO, "main", "stopping (last offset=%lld)", (long long)0);
+}
+
+/**
+ * @brief Load the config, probe with getMe, then long-poll until signalled.
  *
  * @param[in] opts Parsed CLI options.
  *
@@ -108,6 +193,7 @@ static int run_bot(const cli_options_t *opts)
     sa.sa_handler = on_signal;
     (void)sigaction(SIGINT, &sa, NULL);
     (void)sigaction(SIGTERM, &sa, NULL);
+    (void)sigaction(SIGUSR1, &sa, NULL);
 
     loop_t *loop = loop_create(256);
     if (loop == NULL) {
@@ -119,6 +205,8 @@ static int run_bot(const cli_options_t *opts)
         .token = config_get_str(&cfg, CFG_BOT_TOKEN),
         .base_url = config_get_str(&cfg, CFG_API_BASE),
         .user_agent = "nacho-moderator/" TG_VERSION_STRING,
+        .pool_size = (unsigned)config_get_int(&cfg, CFG_API_POOL_SIZE),
+        .request_timeout_ms = (uint64_t)config_get_int(&cfg, CFG_API_REQUEST_TIMEOUT_MS),
     };
     tg_api_t *api = tg_api_create(&acfg, loop_ops(loop), &net_ops_real, &util_clock_ops_real);
     if (api == NULL) {
@@ -127,6 +215,7 @@ static int run_bot(const cli_options_t *opts)
         return 2;
     }
 
+    /* Probe with getMe: validates the token and logs the bot identity. */
     run_state_t rs = {0};
     rc = tg_api_get_me(api, on_get_me, &rs);
     if (rc != 0) {
@@ -135,30 +224,43 @@ static int run_bot(const cli_options_t *opts)
         (void)fprintf(stderr, "tgbot: failed to start getMe\n");
         return 1;
     }
-
     util_log(LOG_INFO, "main", "connecting to %s", acfg.base_url);
-    (void)pump_until_done(loop, &rs);
+    (void)pump_until_done(loop, api, &rs);
 
-    int exit_code = 0;
     if (rs.done && rs.status == 0) {
         (void)printf("getMe ok: id=%lld username=%s name=%s\n", (long long)rs.me.id, rs.me.username,
                      rs.me.first_name);
+        /* Flush so a parent process reading our stdout sees the probe result even
+         * though we then poll indefinitely (stdout is block-buffered on a pipe). */
+        (void)fflush(stdout);
     } else if (g_stop) {
         util_log(LOG_INFO, "main", "interrupted");
-        exit_code = 1;
+        tg_api_destroy(api);
+        loop_destroy(loop);
+        return 1;
     } else {
         util_log(LOG_ERROR, "main", "getMe failed: %d", rs.status);
-        exit_code = 1;
+        tg_api_destroy(api);
+        loop_destroy(loop);
+        return 1;
     }
+
+    run_polling(loop, api, &cfg);
 
     tg_api_destroy(api);
     loop_destroy(loop);
-    return exit_code;
+    return 0;
 }
 
-/* Set to 1 by the self-test timer callback. */
+/** @brief Set to 1 by the self-test timer callback. */
 static int g_selftest_fired;
 
+/**
+ * @brief Self-test timer completion: mark the timer as fired.
+ *
+ * @param[in] op  The timer op (unused).
+ * @param[in] res Timer result (unused).
+ */
 static void on_selftest_timer(struct op *op, int res)
 {
     (void)res;
@@ -205,6 +307,14 @@ static int run_self_test(void)
     }
     return exit_code;
 }
+
+/**
+ * @brief Perform the action selected by the parsed CLI options.
+ *
+ * @param[in] opts Parsed CLI options.
+ *
+ * @return Process exit code.
+ */
 static int dispatch(const cli_options_t *opts)
 {
     switch (opts->action) {
@@ -238,6 +348,14 @@ static int dispatch(const cli_options_t *opts)
     }
 }
 
+/**
+ * @brief Program entry point: parse arguments and dispatch.
+ *
+ * @param[in] argc Argument count.
+ * @param[in] argv Argument vector.
+ *
+ * @return Process exit code (0 success, 1 runtime error, 2 usage error).
+ */
 int main(int argc, char **argv)
 {
     cli_options_t opts;

@@ -1,8 +1,8 @@
 # Configuration
 
 Configuration is loaded from `config.toml` (or `--config <file>`), environment
-variables, and built-in defaults. Precedence is **CLI flag > environment variable
-> config file > default**. The schema lives in `src/config.def`; this file is
+variables, and built-in defaults. Precedence is **CLI flag > environment variable >
+config file > default**. The schema lives in `src/config.def`; this file is
 checked against it by `scripts/check_consistency.py` (C4).
 
 ## Summary
@@ -10,7 +10,7 @@ checked against it by `scripts/check_consistency.py` (C4).
 <!-- BEGIN GENERATED: config-table -->
 | Key | Type | Default | Restart | Description |
 |---|---|---|---|---|
-| `bot_token` | CFG_STR | *(secret)* | yes | Telegram bot token from @BotFather (required) |
+| `bot_token` | CFG_STR | *(secret)* | yes | Telegram bot token issued by BotFather (required) |
 | `mode` | CFG_ENUM | polling | yes | Update source: polling or webhook |
 | `webhook.listen` | CFG_STR | 127.0.0.1:8080 | yes | Webhook listen address behind a TLS-terminating reverse proxy |
 | `webhook.secret` | CFG_STR | *(secret)* | yes | X-Telegram-Bot-Api-Secret-Token value verified on inbound webhook requests |
@@ -18,6 +18,8 @@ checked against it by `scripts/check_consistency.py` (C4).
 | `sudo_ids` | CFG_I64_LIST | *(required)* | yes | Comma-separated Telegram user ids granted bot-level sudo |
 | `api.pool_size` | CFG_INT | 4 | yes | Number of keep-alive TLS connections to the Bot API |
 | `api.base` | CFG_STR | https://api.telegram.org | yes | Bot API base URL; a plain http:// base skips TLS for local or self-hosted deployments |
+| `api.request_timeout_ms` | CFG_INT | 15000 | yes | Per-request deadline for Bot API calls in milliseconds |
+| `polling.timeout` | CFG_INT | 30 | yes | getUpdates long-poll timeout in seconds |
 | `log.level` | CFG_ENUM | info | no | Log verbosity: error, warn, info or debug |
 <!-- END GENERATED: config-table -->
 
@@ -26,7 +28,7 @@ checked against it by `scripts/check_consistency.py` (C4).
 <!-- BEGIN GENERATED: config-reference -->
 ### `bot_token`
 
-Telegram bot token from @BotFather (required).
+Telegram bot token issued by BotFather (required).
 
 - **Type:** CFG_STR
 - **Environment variable:** `BOT_TOKEN`
@@ -95,6 +97,24 @@ Bot API base URL; a plain http:// base skips TLS for local or self-hosted deploy
 - **Type:** CFG_STR
 - **Environment variable:** `API_BASE`
 - **Default:** https://api.telegram.org
+- **Restart required:** yes
+
+### `api.request_timeout_ms`
+
+Per-request deadline for Bot API calls in milliseconds.
+
+- **Type:** CFG_INT
+- **Environment variable:** `API_REQUEST_TIMEOUT_MS`
+- **Default:** 15000
+- **Restart required:** yes
+
+### `polling.timeout`
+
+getUpdates long-poll timeout in seconds.
+
+- **Type:** CFG_INT
+- **Environment variable:** `POLLING_TIMEOUT`
+- **Default:** 30
 - **Restart required:** yes
 
 ### `log.level`

@@ -19,7 +19,7 @@
  * Precedence (implemented once, driven by this table): CLI flag > env var >
  * config file > default. Keys flagged required are listed in CFG_REQUIRED below.
  */
-K(BOT_TOKEN, "bot_token", "BOT_TOKEN", CFG_STR, "", 1, 1, "Telegram bot token from @BotFather (required)")
+K(BOT_TOKEN, "bot_token", "BOT_TOKEN", CFG_STR, "", 1, 1, "Telegram bot token issued by BotFather (required)")
 K(MODE, "mode", "MODE", CFG_ENUM, "polling", 1, 0, "Update source: polling or webhook")
 K(WEBHOOK_LISTEN, "webhook.listen", "WEBHOOK_LISTEN", CFG_STR, "127.0.0.1:8080", 1, 0, "Webhook listen address behind a TLS-terminating reverse proxy")
 K(WEBHOOK_SECRET, "webhook.secret", "WEBHOOK_SECRET", CFG_STR, "", 1, 1, "X-Telegram-Bot-Api-Secret-Token value verified on inbound webhook requests")
@@ -27,6 +27,8 @@ K(DB_PATH, "db.path", "DB_PATH", CFG_STR, "./bot.db", 1, 0, "SQLite database fil
 K(SUDO_IDS, "sudo_ids", "SUDO_IDS", CFG_I64_LIST, "", 1, 0, "Comma-separated Telegram user ids granted bot-level sudo")
 K(API_POOL_SIZE, "api.pool_size", "API_POOL_SIZE", CFG_INT, "4", 1, 0, "Number of keep-alive TLS connections to the Bot API")
 K(API_BASE, "api.base", "API_BASE", CFG_STR, "https://api.telegram.org", 1, 0, "Bot API base URL; a plain http:// base skips TLS for local or self-hosted deployments")
+K(API_REQUEST_TIMEOUT_MS, "api.request_timeout_ms", "API_REQUEST_TIMEOUT_MS", CFG_INT, "15000", 1, 0, "Per-request deadline for Bot API calls in milliseconds")
+K(POLLING_TIMEOUT, "polling.timeout", "POLLING_TIMEOUT", CFG_INT, "30", 1, 0, "getUpdates long-poll timeout in seconds")
 K(LOG_LEVEL, "log.level", "LOG_LEVEL", CFG_ENUM, "info", 0, 0, "Log verbosity: error, warn, info or debug")
 
 /* Keys whose value must be provided (no usable default). */

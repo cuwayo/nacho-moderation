@@ -8,18 +8,31 @@ implementation progresses; the binding rules live in [`SPEC.md`](SPEC.md).
 > incremental HTTP client (`src/http.c`), worker-thread DNS resolver
 > (`src/resolver.c`), a minimal Bot API client (`src/tg_api.c`), and the
 > utilities (`src/util.c`). The router, DB worker, commands, and automod arrive in
-> M2–M6.
+> M3–M6.
+>
+> **Implemented in M2:** reusable keep-alive connections (`conn_keep_alive` /
+> `conn_reuse_begin` in `src/net_conn.c`), the outbound rate limiter
+> (`src/rate_limit.c`), the retry policy (`src/api_retry.c`), the connection pool
+> (`src/api_pool.c`), the API client facade (`src/tg_api.c`), the API method table
+> (`src/api_methods.c`), runtime counters (`src/metrics.c`), and the `getUpdates`
+> long-poll loop (`src/polling.c`).
 
-## Module map (M1)
+## Module map (M1–M2)
 
 | Module | Responsibility |
 |---|---|
 | `loop` | Ring setup with feature probing, SQE prep helpers, one submit per iteration, CQE dispatch by `op_t` type |
-| `net_conn` | connect → TLS handshake → HTTP write → HTTP read state machine |
+| `net_conn` | connect → TLS handshake → HTTP write → HTTP read state machine; keep-alive reuse |
 | `tls` | `BIO_s_mem` pump; ciphertext moved by io_uring recv/send, never blocking `SSL_read`/`SSL_write` on a socket |
-| `http` | Request builder and byte-at-a-time response parser (Content-Length, chunked, keep-alive) |
+| `http` | Request builders (GET/POST) and byte-at-a-time response parser (Content-Length, chunked, keep-alive) |
 | `resolver` | `getaddrinfo` on a worker thread, handed to the loop via `eventfd` |
-| `tg_api` | Minimal client issuing `getMe` (pool, retry, and rate limiter arrive in M2) |
+| `api_methods` | X-macro view of `api_methods.def`: names, buckets, idempotency |
+| `rate_limit` | Token buckets (global 25/s, per-chat 15/min, bulk 1/s) with an injectable clock and 429 pause |
+| `api_retry` | Retry decision (idempotency, backoff, deadline) |
+| `api_pool` | Keep-alive connection pool, request queue, rate-limit gating, retries, dispatch timer |
+| `tg_api` | API client facade, method wrappers, JSON parsing, injectable `tg_api_ops_t` seam |
+| `polling` | `getUpdates` long-poll loop and offset tracking |
+| `metrics` | Runtime counters (SIGUSR1 dump) |
 | `util` | Arena allocator, string builder, duration parser, HTML escape, injectable clock, logger |
 
 ## Component overview

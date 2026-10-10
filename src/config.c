@@ -346,7 +346,7 @@ int config_parse_file(const char *path, int (*store)(void *user, cfg_id_t id, co
     return rc;
 }
 
-/* Validation state threaded through config_parse_file's store callback. */
+/** @brief Validation state threaded through config_parse_file's store callback. */
 typedef struct {
     int seen[CFG_COUNT]; /**< 1 once a key has been provided. */
     char *errbuf;        /**< Error message buffer (may be NULL). */

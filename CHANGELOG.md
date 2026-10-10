@@ -38,4 +38,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   duration parser; a `fake_ring` test double for the loop interfaces.
 - CI: `docs-lint`, `docs-build`, and `docs-consistency` jobs.
 
+### Added (M2)
+
+- M2: reusable keep-alive connections — `conn_keep_alive()` / `conn_reuse_begin()`
+  reissue a request on the same socket and TLS session (`src/net_conn.c`), plus an
+  HTTP/1.1 POST request builder with a JSON body (`src/http.c`).
+- M2: outbound token-bucket rate limiter — global 25 req/s, per-chat 15 req/min
+  for messages and 1 req/s for bulk, with 429 `retry_after` pausing and the
+  1/2/4/8/16/30 s backoff schedule, driven by the injectable clock
+  (`src/rate_limit.c`).
+- M2: retry policy (`src/api_retry.c`) keyed on the idempotency flag in
+  `src/api_methods.def`, and a C view of that table (`src/api_methods.c`).
+- M2: keep-alive API connection pool with a request queue, rate-limit gating,
+  retries and a single dispatch timer (`src/api_pool.c`), and the API client
+  facade with method wrappers and response parsing (`src/tg_api.c`). The Bot API
+  host is resolved once at startup on the worker-thread resolver
+  (`src/resolver.c`), reused for every connection.
+- M2: `getUpdates` long-poll loop tracking `offset = last_update_id + 1` with an
+  explicit `allowed_updates` set (`src/polling.c`); the default run now polls
+  until SIGINT/SIGTERM.
+- M2: runtime counters generated from `src/metrics.def`, dumped on SIGUSR1
+  (`src/metrics.c`).
+- M2 config keys: `api.request_timeout_ms` and `polling.timeout`.
+- M2 tests: rate limiter, retry policy, API method table, connection reuse
+  (plain + TLS), POST builder, response parsing, and the polling loop, plus a
+  `fuzz_api_response` fuzz target and a polling integration scenario.
+- M2 consistency check C9: every `api_methods.def` method has a mock-server
+  handler and a `docs/telegram-api-notes.md` row.
+
 [Unreleased]: https://example.invalid/nacho-moderator/commits/main

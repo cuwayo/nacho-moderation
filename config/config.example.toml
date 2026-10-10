@@ -3,7 +3,7 @@
 # Copy to config.toml and edit. Precedence: CLI flag > environment
 # variable > this file > built-in default.
 
-# Telegram bot token from @BotFather (required)
+# Telegram bot token issued by BotFather (required)
 # env: BOT_TOKEN
 bot_token = "123456:REPLACE_ME"
 
@@ -40,6 +40,16 @@ pool_size = 4
 # Bot API base URL; a plain http:// base skips TLS for local or self-hosted deployments
 # env: API_BASE
 base = "https://api.telegram.org"
+
+# Per-request deadline for Bot API calls in milliseconds
+# env: API_REQUEST_TIMEOUT_MS
+request_timeout_ms = 15000
+
+[polling]
+
+# getUpdates long-poll timeout in seconds
+# env: POLLING_TIMEOUT
+timeout = 30
 
 [log]
 

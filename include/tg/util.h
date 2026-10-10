@@ -151,7 +151,7 @@ int strbuf_append_str(strbuf_t *b, const char *s);
  * @return 0 on success, -ENOMEM on failure.
  * @thread_safety Not thread-safe.
  */
-__attribute__((format(printf, 2, 3))) int strbuf_appendf(strbuf_t *b, const char *fmt, ...);
+int strbuf_appendf(strbuf_t *b, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
 /**
  * @brief Return the NUL-terminated contents (allocating the NUL if needed).
@@ -230,11 +230,19 @@ void util_log_set_level(log_level_t level);
  * @param[in] ...    Format arguments.
  * @thread_safety Not thread-safe (writes to stderr).
  */
-__attribute__((format(printf, 3, 4))) void util_log(log_level_t level, const char *module,
-                                                    const char *fmt, ...);
+void util_log(log_level_t level, const char *module, const char *fmt, ...)
+    __attribute__((format(printf, 3, 4)));
 
-/** @brief printf-style logging that takes a va_list (used by util_log). */
-__attribute__((format(printf, 3, 0))) void util_vlog(log_level_t level, const char *module,
-                                                     const char *fmt, va_list ap);
+/**
+ * @brief printf-style logging that takes a va_list (used by util_log).
+ *
+ * @param[in] level  Severity.
+ * @param[in] module Module name (short, lowercase).
+ * @param[in] fmt    printf format.
+ * @param[in] ap     Format argument list.
+ * @thread_safety Not thread-safe (writes to stderr).
+ */
+void util_vlog(log_level_t level, const char *module, const char *fmt, va_list ap)
+    __attribute__((format(printf, 3, 0)));
 
 #endif /* TG_UTIL_H */

@@ -91,6 +91,16 @@ class ConsistencyFixtureTests(unittest.TestCase):
         ).stdout
         (self.tmp / "config" / "config.example.toml").write_text(sample, encoding="utf-8")
 
+        # C9 fixture: a mock server registry and a docs row per method.
+        (self.tmp / "tests" / "mock").mkdir(parents=True)
+        methods = [m["method"] for m in self.tables.get("api_methods", [])]
+        (self.tmp / "tests" / "mock" / "mock_tg_server.py").write_text(
+            "HANDLERS = [" + ", ".join(f'"{m}"' for m in methods) + "]\n", encoding="utf-8"
+        )
+        (self.tmp / "docs" / "telegram-api-notes.md").write_text(
+            "\n".join(f"| `{m}` | global | yes |" for m in methods) + "\n", encoding="utf-8"
+        )
+
     # --- passing fixtures ---------------------------------------------------
 
     def test_c1_passes_on_fresh_repo(self):
@@ -107,6 +117,9 @@ class ConsistencyFixtureTests(unittest.TestCase):
 
     def test_c5_passes_on_fresh_repo(self):
         self.assertTrue(check_consistency.check_c5(self.tmp, BINARY, self.tables).passed)
+
+    def test_c9_passes_on_fresh_repo(self):
+        self.assertTrue(check_consistency.check_c9(self.tmp, self.tables).passed)
 
     # --- failing fixtures ---------------------------------------------------
 
@@ -139,6 +152,16 @@ class ConsistencyFixtureTests(unittest.TestCase):
         sample = self.tmp / "config" / "config.example.toml"
         sample.write_text(sample.read_text(encoding="utf-8") + "\n# tampered\n", encoding="utf-8")
         self.assertFalse(check_consistency.check_c5(self.tmp, BINARY, self.tables).passed)
+
+    def test_c9_fails_when_mock_handler_missing(self):
+        mock = self.tmp / "tests" / "mock" / "mock_tg_server.py"
+        mock.write_text('HANDLERS = ["getMe"]\n', encoding="utf-8")
+        self.assertFalse(check_consistency.check_c9(self.tmp, self.tables).passed)
+
+    def test_c9_fails_when_docs_row_missing(self):
+        notes = self.tmp / "docs" / "telegram-api-notes.md"
+        notes.write_text("| `getMe` | global | yes |\n", encoding="utf-8")
+        self.assertFalse(check_consistency.check_c9(self.tmp, self.tables).passed)
 
 
 @unittest.skipIf(BINARY is None, "no tgbot binary built")

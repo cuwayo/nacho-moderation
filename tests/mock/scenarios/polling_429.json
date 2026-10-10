@@ -1,0 +1,21 @@
+{
+  "_comment": "Polling with a 429 on the first getUpdates: the pool must pause the bucket for retry_after and retry the SAME request (offset 0), then deliver update 10 and advance the offset to 11.",
+  "faults": {
+    "getUpdates": [
+      {
+        "kind": "status",
+        "status": 429,
+        "body": {
+          "ok": false,
+          "error_code": 429,
+          "description": "Too Many Requests: retry later",
+          "parameters": {"retry_after": 1}
+        }
+      }
+    ]
+  },
+  "updates": [
+    [{"update_id": 10, "message": {"message_id": 1, "date": 0, "text": "hello"}}],
+    []
+  ]
+}

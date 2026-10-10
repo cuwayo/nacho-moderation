@@ -23,9 +23,12 @@
 #include "tg/tls.h"
 #include "tg/util.h"
 
+/** @brief Default connect/read deadline when the caller passes 0 (milliseconds). */
 #define CONN_DEFAULT_TIMEOUT_MS 10000u
+/** @brief Size of the connection's receive/scratch buffers (bytes). */
 #define CONN_READ_CHUNK 16384u
 
+/** @brief One TCP/TLS connection and its in-flight op contexts. */
 struct conn {
     op_t connect_op; /**< OP_CONNECT context. */
     op_t timeout_op; /**< OP_LINK_TIMEOUT companion. */
@@ -53,10 +56,21 @@ struct conn {
     char rbuf[CONN_READ_CHUNK]; /**< Receive buffer. */
     http_resp_t resp;           /**< Response parser. */
     int have_request;           /**< 1 once a request has been queued. */
+    int leftover;               /**< 1 if bytes beyond the parsed response remain
+                                 *   (pipelining); reuse must be refused. */
 };
 
 /* --- Real socket ops ------------------------------------------------------- */
 
+/**
+ * @brief Create a non-blocking, close-on-exec socket.
+ *
+ * @param[in] ctx   Unused.
+ * @param[in] family Address family.
+ * @param[in] type   Socket type (SOCK_NONBLOCK/SOCK_CLOEXEC are added).
+ * @param[in] proto  Protocol.
+ * @return The fd, or negative errno on failure.
+ */
 static int real_sock_create(void *ctx, int family, int type, int proto)
 {
     (void)ctx;
@@ -67,6 +81,13 @@ static int real_sock_create(void *ctx, int family, int type, int proto)
     return fd < 0 ? -errno : fd;
 }
 
+/**
+ * @brief Close a socket (no-op for a negative fd).
+ *
+ * @param[in] ctx Unused.
+ * @param[in] fd  Descriptor.
+ * @return 0 on success, negative errno on failure.
+ */
 static int real_sock_close(void *ctx, int fd)
 {
     (void)ctx;
@@ -90,6 +111,11 @@ static void on_recv(struct op *op, int res);
 
 /* --- Completion callback plumbing ------------------------------------------ */
 
+/**
+ * @brief Invoke the connection's completion callback.
+ *
+ * @param[in] c Connection.
+ */
 static void fire_cb(conn_t *c)
 {
     if (c->cb != NULL) {
@@ -97,6 +123,12 @@ static void fire_cb(conn_t *c)
     }
 }
 
+/**
+ * @brief Fail the connection and fire its callback.
+ *
+ * @param[in] c      Connection.
+ * @param[in] status Negative errno to report.
+ */
 static void conn_fail(conn_t *c, int status)
 {
     /* STATE: * -> CONN_ERROR on a terminal error. */
@@ -107,7 +139,12 @@ static void conn_fail(conn_t *c, int status)
 
 /* --- Send/recv submission helpers ------------------------------------------ */
 
-/* Submit a send for the remaining wbuf bytes. Returns 0 or negative errno. */
+/**
+ * @brief Submit a send for the remaining queued bytes.
+ *
+ * @param[in] c Connection.
+ * @return 0 on success (including nothing left to send), negative errno on failure.
+ */
 static int submit_send(conn_t *c)
 {
     size_t remaining = c->wlen - c->woff;
@@ -117,12 +154,25 @@ static int submit_send(conn_t *c)
     return c->ops->prep_send(c->ops->ctx, &c->send_op, c->fd, c->wbuf + c->woff, remaining);
 }
 
+/**
+ * @brief Submit a receive into the connection's read buffer.
+ *
+ * @param[in] c Connection.
+ * @return 0 on success, negative errno on failure.
+ */
 static int submit_recv(conn_t *c)
 {
     return c->ops->prep_recv(c->ops->ctx, &c->recv_op, c->fd, c->rbuf, sizeof(c->rbuf));
 }
 
-/* Append @p n bytes to the write buffer (used for TLS ciphertext). */
+/**
+ * @brief Append @p n bytes to the write buffer (used for TLS ciphertext).
+ *
+ * @param[in,out] c   Connection.
+ * @param[in]     buf Bytes to append.
+ * @param[in]     n   Count.
+ * @return 0 on success, -ENOMEM on failure.
+ */
 static int wbuf_append(conn_t *c, const void *buf, size_t n)
 {
     char *nb = realloc(c->wbuf, c->wlen + n);
@@ -135,7 +185,12 @@ static int wbuf_append(conn_t *c, const void *buf, size_t n)
     return 0;
 }
 
-/* Drain all pending TLS ciphertext into wbuf. */
+/**
+ * @brief Drain all pending TLS ciphertext into the write buffer.
+ *
+ * @param[in,out] c Connection.
+ * @return 0 on success, negative errno on failure.
+ */
 static int tls_queue_output(conn_t *c)
 {
     char tmp[CONN_READ_CHUNK];
@@ -157,8 +212,12 @@ static int tls_queue_output(conn_t *c)
 
 /* --- TLS handshake pump ---------------------------------------------------- */
 
-/* Drive the handshake as far as the BIOs allow. Returns 0 to keep pumping,
- * 1 when the handshake is complete, negative errno on failure. */
+/**
+ * @brief Drive the TLS handshake as far as the BIOs allow.
+ *
+ * @param[in,out] c Connection.
+ * @return 0 to keep pumping, 1 when the handshake is complete, negative errno on failure.
+ */
 static int tls_handshake_pump(conn_t *c)
 {
     for (;;) {
@@ -184,6 +243,11 @@ static int tls_handshake_pump(conn_t *c)
 
 /* --- Central pump ---------------------------------------------------------- */
 
+/**
+ * @brief Advance the connection based on its current state (TLS handshake pump).
+ *
+ * @param[in,out] c Connection.
+ */
 static void conn_pump(conn_t *c)
 {
     switch (c->state) {
@@ -213,6 +277,12 @@ static void conn_pump(conn_t *c)
 
 /* --- Op completions -------------------------------------------------------- */
 
+/**
+ * @brief OP_CONNECT completion: proceed to TLS/HTTP or fail.
+ *
+ * @param[in] op  Op context (owner is the connection).
+ * @param[in] res Completion result (0 on success).
+ */
 static void on_connect(struct op *op, int res)
 {
     conn_t *c = op->owner;
@@ -245,6 +315,12 @@ static void on_connect(struct op *op, int res)
     }
 }
 
+/**
+ * @brief OP_LINK_TIMEOUT completion: fail the connection on a genuine expiry.
+ *
+ * @param[in] op  Op context (owner is the connection).
+ * @param[in] res Completion result (-ETIME on expiry, -ECANCELED when benign).
+ */
 static void on_timeout(struct op *op, int res)
 {
     conn_t *c = op->owner;
@@ -258,6 +334,12 @@ static void on_timeout(struct op *op, int res)
     conn_fail(c, res == 0 ? -ETIME : res);
 }
 
+/**
+ * @brief OP_SEND completion: advance the offset, resubmit, or move to read.
+ *
+ * @param[in] op  Op context (owner is the connection).
+ * @param[in] res Bytes written, or negative errno.
+ */
 static void on_send(struct op *op, int res)
 {
     conn_t *c = op->owner;
@@ -298,8 +380,13 @@ static void on_send(struct op *op, int res)
     }
 }
 
-/* Handle a TLS_WANT_WRITE / TLS_ERROR / no-data step result. Returns 0 to
- * continue the pump, 1 when the response is complete, negative errno on error. */
+/**
+ * @brief Handle a TLS_WANT_WRITE / TLS_ERROR / no-data step result.
+ *
+ * @param[in,out] c  Connection.
+ * @param[in]     st The pump step result.
+ * @return 0 to continue the pump, 1 when the response is complete, negative errno on error.
+ */
 static int tls_step_aftermath(conn_t *c, tls_step_t st)
 {
     if (st == TLS_WANT_WRITE) {
@@ -319,7 +406,12 @@ static int tls_step_aftermath(conn_t *c, tls_step_t st)
     return c->resp.state == HR_DONE ? 1 : 0;
 }
 
-/* Decrypt available plaintext and feed the HTTP parser; returns 1 done. */
+/**
+ * @brief Decrypt available plaintext and feed the HTTP parser.
+ *
+ * @param[in,out] c Connection.
+ * @return 1 when the response is complete, 0 to keep reading, negative errno on error.
+ */
 static int tls_read_and_feed(conn_t *c)
 {
     char plain[CONN_READ_CHUNK];
@@ -337,18 +429,33 @@ static int tls_read_and_feed(conn_t *c)
     }
 }
 
-/* Feed received bytes into the HTTP parser (decrypting first under TLS).
- * Returns 1 when the response is complete, 0 to keep reading, negative errno. */
+/**
+ * @brief Feed received bytes into the HTTP parser (decrypting first under TLS).
+ *
+ * @param[in,out] c   Connection.
+ * @param[in]     len Number of bytes in the read buffer.
+ * @return 1 when the response is complete, 0 to keep reading, negative errno on error.
+ */
 static int recv_feed_body(conn_t *c, size_t len)
 {
     if (c->tls != NULL) {
         return tls_read_and_feed(c);
     }
     size_t consumed = 0;
-    return http_resp_feed(&c->resp, c->rbuf, len, &consumed);
+    int rc = http_resp_feed(&c->resp, c->rbuf, len, &consumed);
+    /* Bytes past the end of the response are pipelined data we do not expect; a
+     * keep-alive reuse would lose them, so mark the connection non-reusable. */
+    if (rc == 1 && consumed < len) {
+        c->leftover = 1;
+    }
+    return rc;
 }
 
-/* Handle a peer close (res == 0): success only if the response is complete. */
+/**
+ * @brief Handle a peer close: success only if the response is complete.
+ *
+ * @param[in,out] c Connection.
+ */
 static void recv_peer_closed(conn_t *c)
 {
     if (c->resp.state == HR_DONE) {
@@ -360,6 +467,12 @@ static void recv_peer_closed(conn_t *c)
     }
 }
 
+/**
+ * @brief OP_RECV completion: feed the parser, finish, or keep reading.
+ *
+ * @param[in] op  Op context (owner is the connection).
+ * @param[in] res Bytes received, 0 on peer close, or negative errno.
+ */
 static void on_recv(struct op *op, int res)
 {
     conn_t *c = op->owner;
@@ -548,4 +661,36 @@ void conn_destroy(conn_t *c)
     http_resp_free(&c->resp);
     free(c->wbuf);
     free(c);
+}
+
+int conn_keep_alive(const conn_t *c)
+{
+    if (c == NULL || c->state != CONN_DONE) {
+        return 0;
+    }
+    return c->resp.keep_alive && !c->leftover;
+}
+
+int conn_reuse_begin(conn_t *c)
+{
+    if (c == NULL || c->state != CONN_DONE) {
+        return -EINVAL;
+    }
+    if (!conn_keep_alive(c)) {
+        return -EPROTO;
+    }
+
+    /* STATE: CONN_DONE -> CONN_HTTP_WRITE on conn_reuse_begin (same fd + TLS). */
+    http_resp_free(&c->resp);
+    if (http_resp_init(&c->resp, 0) != 0) {
+        /* http_resp_init only fails on a NULL argument; never reached in practice. */
+        return -ENOMEM;
+    }
+    /* Discard the previous request bytes; the next request rewrites the buffer. */
+    c->wlen = 0;
+    c->woff = 0;
+    c->have_request = 0;
+    c->leftover = 0;
+    c->state = CONN_HTTP_WRITE;
+    return 0;
 }

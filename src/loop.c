@@ -20,6 +20,7 @@
 // NOLINTBEGIN(misc-include-cleaner)
 #include <liburing.h>
 
+/** @brief The concrete io_uring loop (ring + bound vtable). */
 struct loop {
     struct io_uring ring; /**< The io_uring instance. */
     loop_ops_t ops;       /**< Vtable bound to this loop. */
@@ -29,6 +30,16 @@ struct loop {
 
 /* --- Real ring operations -------------------------------------------------- */
 
+/**
+ * @brief Prepare an OP_CONNECT SQE, chaining the linked deadline when flagged.
+ *
+ * @param[in] ctx Loop.
+ * @param[in] op  Op context (its flags decide IOSQE_IO_LINK).
+ * @param[in] fd  Socket fd.
+ * @param[in] sa  Target address.
+ * @param[in] len Address length.
+ * @return 0 on success, -EAGAIN if no SQE is free.
+ */
 static int real_prep_connect(void *ctx, op_t *op, int fd, const struct sockaddr *sa, socklen_t len)
 {
     loop_t *l = ctx;
@@ -46,6 +57,16 @@ static int real_prep_connect(void *ctx, op_t *op, int fd, const struct sockaddr 
     return 0;
 }
 
+/**
+ * @brief Prepare an OP_RECV SQE.
+ *
+ * @param[in] ctx Loop.
+ * @param[in] op  Op context.
+ * @param[in] fd  Socket fd.
+ * @param[in] buf Receive buffer.
+ * @param[in] len Buffer capacity.
+ * @return 0 on success, -EAGAIN if no SQE is free.
+ */
 static int real_prep_recv(void *ctx, op_t *op, int fd, void *buf, size_t len)
 {
     loop_t *l = ctx;
@@ -58,6 +79,16 @@ static int real_prep_recv(void *ctx, op_t *op, int fd, void *buf, size_t len)
     return 0;
 }
 
+/**
+ * @brief Prepare an OP_SEND SQE (MSG_NOSIGNAL so a closed peer does not signal).
+ *
+ * @param[in] ctx Loop.
+ * @param[in] op  Op context.
+ * @param[in] fd  Socket fd.
+ * @param[in] buf Bytes to send.
+ * @param[in] len Count.
+ * @return 0 on success, -EAGAIN if no SQE is free.
+ */
 static int real_prep_send(void *ctx, op_t *op, int fd, const void *buf, size_t len)
 {
     loop_t *l = ctx;
@@ -70,12 +101,26 @@ static int real_prep_send(void *ctx, op_t *op, int fd, const void *buf, size_t l
     return 0;
 }
 
+/**
+ * @brief Fill @p op's embedded timespec from a millisecond count.
+ *
+ * @param[out] op Op whose timer field is written.
+ * @param[in]  ms Milliseconds.
+ */
 static void fill_timespec(op_t *op, uint64_t ms)
 {
     op->timer.tv_sec = (int64_t)(ms / 1000u);
     op->timer.tv_nsec = (int64_t)((ms % 1000u) * 1000000u);
 }
 
+/**
+ * @brief Prepare a standalone OP_TIMEOUT SQE.
+ *
+ * @param[in] ctx Loop.
+ * @param[in] op  Op context (holds the timespec the kernel reads asynchronously).
+ * @param[in] ms  Timeout in milliseconds.
+ * @return 0 on success, -EAGAIN if no SQE is free.
+ */
 static int real_prep_timeout(void *ctx, op_t *op, uint64_t ms)
 {
     loop_t *l = ctx;
@@ -92,6 +137,14 @@ static int real_prep_timeout(void *ctx, op_t *op, uint64_t ms)
     return 0;
 }
 
+/**
+ * @brief Prepare a linked IORING_OP_LINK_TIMEOUT SQE.
+ *
+ * @param[in] ctx  Loop.
+ * @param[in] link Op context receiving the timeout completion.
+ * @param[in] ms   Timeout in milliseconds.
+ * @return 0 on success, -EAGAIN if no SQE is free.
+ */
 static int real_prep_link_timeout(void *ctx, op_t *link, uint64_t ms)
 {
     loop_t *l = ctx;
@@ -107,6 +160,14 @@ static int real_prep_link_timeout(void *ctx, op_t *link, uint64_t ms)
     return 0;
 }
 
+/**
+ * @brief Prepare an eventfd read (worker-thread handoff).
+ *
+ * @param[in] ctx Loop.
+ * @param[in] op  Op context.
+ * @param[in] efd eventfd to read.
+ * @return 0 on success, -EAGAIN if no SQE is free.
+ */
 static int real_prep_read_eventfd(void *ctx, op_t *op, int efd)
 {
     loop_t *l = ctx;
@@ -121,6 +182,14 @@ static int real_prep_read_eventfd(void *ctx, op_t *op, int efd)
     return 0;
 }
 
+/**
+ * @brief Prepare an OP_CLOSE SQE.
+ *
+ * @param[in] ctx Loop.
+ * @param[in] op  Op context.
+ * @param[in] fd  Descriptor to close.
+ * @return 0 on success, -EAGAIN if no SQE is free.
+ */
 static int real_prep_close(void *ctx, op_t *op, int fd)
 {
     loop_t *l = ctx;
@@ -133,6 +202,12 @@ static int real_prep_close(void *ctx, op_t *op, int fd)
     return 0;
 }
 
+/**
+ * @brief Submit all queued SQEs (one submit per loop iteration).
+ *
+ * @param[in] ctx Loop.
+ * @return Number submitted, or negative errno.
+ */
 static int real_submit(void *ctx)
 {
     loop_t *l = ctx;
@@ -144,6 +219,14 @@ static int real_submit(void *ctx)
     return n;
 }
 
+/**
+ * @brief Block for one CQE and return its op and result.
+ *
+ * @param[in]  ctx Loop.
+ * @param[out] op  Receives the op pointer from the CQE's user_data.
+ * @param[out] res Receives the completion result.
+ * @return 0 on success, negative errno on failure.
+ */
 static int real_wait_cqe(void *ctx, op_t **op, int *res)
 {
     loop_t *l = ctx;

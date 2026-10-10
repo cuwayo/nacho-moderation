@@ -21,6 +21,7 @@ typedef enum {
     RESOLVER_FAILED       /**< Resolution failed. */
 } resolver_status_t;
 
+/** @brief Opaque resolver object (one worker-thread name resolution). */
 typedef struct resolver resolver_t;
 
 /**

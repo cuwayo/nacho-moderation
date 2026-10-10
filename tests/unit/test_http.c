@@ -165,6 +165,31 @@ static void test_request_build(void **state)
     assert_int_equal(http_request_build(small, sizeof(small), "GET", "/x", "h", "ua", &n), -ENOSPC);
 }
 
+static void test_post_request_build(void **state)
+{
+    (void)state;
+    char out[256];
+    size_t n = 0;
+    const char *body = "{\"chat_id\":1}";
+    assert_int_equal(http_request_build_post(out, sizeof(out), "/botX/sendMessage",
+                                             "api.telegram.org", "tgbot/1", body, strlen(body), &n),
+                     0);
+    assert_true(strncmp(out, "POST /botX/sendMessage HTTP/1.1\r\n", 33) == 0);
+    assert_non_null(strstr(out, "Content-Type: application/json\r\n"));
+    assert_non_null(strstr(out, "Content-Length: 13\r\n"));
+    assert_non_null(strstr(out, "\r\n\r\n{\"chat_id\":1}"));
+    assert_int_equal(n, strlen(out));
+
+    /* Empty body is allowed (Content-Length: 0). */
+    assert_int_equal(http_request_build_post(out, sizeof(out), "/x", "h", NULL, NULL, 0, &n), 0);
+    assert_non_null(strstr(out, "Content-Length: 0\r\n"));
+
+    char small[16];
+    assert_int_equal(
+        http_request_build_post(small, sizeof(small), "/x", "h", "ua", body, strlen(body), &n),
+        -ENOSPC);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -178,6 +203,7 @@ int main(void)
         cmocka_unit_test(test_bad_status_line_rejected),
         cmocka_unit_test(test_partial_then_rest),
         cmocka_unit_test(test_request_build),
+        cmocka_unit_test(test_post_request_build),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

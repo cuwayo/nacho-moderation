@@ -38,7 +38,7 @@ The available commands are listed below.
 <!-- BEGIN GENERATED: commands-table -->
 | Command | Role | Usage | Description |
 |---|---|---|---|
-| `/help` | ROLE_ANYONE | `` | Show available commands |
+| `/help` | ROLE_ANYONE |  | Show available commands |
 <!-- END GENERATED: commands-table -->
 
 # SIGNALS

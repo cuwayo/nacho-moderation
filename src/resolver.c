@@ -22,6 +22,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+/** @brief One worker-thread name resolution and its eventfd handoff. */
 struct resolver {
     pthread_t thread;        /**< Worker thread. */
     atomic_int status;       /**< RESOLVER_* status. */
@@ -33,6 +34,11 @@ struct resolver {
     char port[32];           /**< Copy of the port string. */
 };
 
+/**
+ * @brief Wake the loop by writing to the eventfd (best-effort).
+ *
+ * @param[in] efd eventfd, or -1 for none.
+ */
 static void notify(int efd)
 {
     if (efd < 0) {
@@ -43,6 +49,12 @@ static void notify(int efd)
     (void)n; /* best-effort; a lost wakeup is harmless because status is polled */
 }
 
+/**
+ * @brief Worker entry point: resolve the host and publish the result.
+ *
+ * @param[in] arg The resolver.
+ * @return NULL (unused).
+ */
 static void *worker(void *arg)
 {
     resolver_t *r = arg;
