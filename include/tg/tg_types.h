@@ -41,14 +41,15 @@ typedef struct {
 
 /** @brief A Telegram message (subset used by the bot). */
 typedef struct {
-    int64_t message_id;        /**< Per-chat message id. */
-    int64_t date;              /**< Unix time the message was sent. */
-    tg_user_t from;            /**< Sender (zeroed for service messages). */
-    tg_chat_t chat;            /**< Chat the message belongs to. */
-    char text[4097];           /**< Message text (UTF-8, NUL-terminated; "" if none). */
-    int has_reply;             /**< 1 if the message replies to another message. */
-    tg_user_t reply_from;      /**< Sender of the replied-to message (valid if has_reply). */
-    unsigned new_member_count; /**< Entries in @ref new_members. */
+    int64_t message_id;          /**< Per-chat message id. */
+    int64_t date;                /**< Unix time the message was sent. */
+    tg_user_t from;              /**< Sender (zeroed for service messages). */
+    tg_chat_t chat;              /**< Chat the message belongs to. */
+    char text[4097];             /**< Message text (UTF-8, NUL-terminated; "" if none). */
+    int has_reply;               /**< 1 if the message replies to another message. */
+    int64_t reply_to_message_id; /**< Id of the replied-to message (0 if none). */
+    tg_user_t reply_from;        /**< Sender of the replied-to message (valid if has_reply). */
+    unsigned new_member_count;   /**< Entries in @ref new_members. */
     tg_user_t new_members[TG_MAX_NEW_MEMBERS]; /**< Users added by a join message. */
     int is_service; /**< 1 for a service message (no sender, e.g. joins/pins). */
 } tg_message_t;

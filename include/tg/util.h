@@ -45,6 +45,36 @@ uint64_t clock_now_ms(const clock_ops_t *c);
 /** @brief Real monotonic clock backed by clock_gettime(CLOCK_MONOTONIC). */
 extern const clock_ops_t util_clock_ops_real;
 
+/* --- Injectable wall clock (SPEC-ADDENDUM-TOOLCHAIN A3) -------------------- */
+
+/**
+ * @brief Injectable wall clock returning Unix time in seconds.
+ *
+ * The monotonic @ref clock_ops_t drives timers and TTLs, but Telegram's
+ * `until_date` (bans/restrictions) and the persisted `actions.expires_at` column
+ * are absolute wall-clock timestamps that must survive a restart (SPEC section
+ * 5.6). Logic modules take a @ref wall_clock_ops_t so tests can advance time
+ * deterministically; the production implementation lives in util.c
+ * (`util_wall_clock_real`) and is the only place that reads the real wall clock.
+ */
+typedef struct {
+    int64_t (*now_unix)(void *ctx); /**< Returns Unix seconds. */
+    void *ctx;                      /**< Opaque context for @ref now_unix. */
+} wall_clock_ops_t;
+
+/**
+ * @brief Read the wall clock, or 0 if @p c is NULL.
+ *
+ * @param[in] c Wall clock, or NULL.
+ *
+ * @return Current Unix seconds.
+ * @thread_safety Depends on the implementation.
+ */
+int64_t wall_now_unix(const wall_clock_ops_t *c);
+
+/** @brief Real wall clock backed by time(). */
+extern const wall_clock_ops_t util_wall_clock_real;
+
 /* --- Arena allocator (per-update scratch memory, SPEC section 9) ----------- */
 
 /** @brief A block in an arena's free list. */

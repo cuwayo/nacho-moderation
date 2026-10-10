@@ -23,8 +23,16 @@ implementation progresses; the binding rules live in [`SPEC.md`](SPEC.md).
 > (`src/perms.c`), and a real `/help` reply rendered from the command table
 > (`src/commands.c`, `src/cmd_help.c`). Remaining command groups and automod arrive
 > in M4–M6.
+>
+> **Implemented in M4:** the moderation commands `/ban /unban /kick /mute /unmute`
+> (`src/cmd_mod.c`) and `/del /pin /unpin /purge` (`src/cmd_msg.c`), shared argument
+> parsing and target guards (`src/cmd_util.c`), the reference-counted command
+> invocation (`src/cmd_ctx.c`), the injectable wall clock (`src/util.c`), and the
+> expiring-actions sweeper (`src/expiry.c`). The router now resolves targets
+> (`@username` via the `users` cache) and derives caller/target/bot roles from one
+> `getChatAdministrators` fetch. Warns, settings, and automod arrive in M5–M6.
 
-## Module map (M1–M3)
+## Module map (M1–M4)
 
 | Module | Responsibility |
 |---|---|
@@ -40,8 +48,12 @@ implementation progresses; the binding rules live in [`SPEC.md`](SPEC.md).
 | `tg_api` | API client facade, method wrappers, JSON parsing, injectable `tg_api_ops_t` seam |
 | `polling` | `getUpdates` long-poll loop and offset tracking |
 | `tg_types` | Parse `getUpdates` batches into bounded Update/Message/User/Chat structs |
-| `router` | Parse `/command`, resolve target, check permissions, dispatch handlers |
-| `db` | SQLite worker thread, MPSC job queue, migrations, `users`/`chats` upserts, eventfd handoff |
+| `router` | Parse `/command`, resolve target (reply / numeric / `@username`), fetch the admin list, check permissions, dispatch handlers |
+| `cmd_ctx` | Reference-counted command invocation; reply and action-recording hooks |
+| `cmd_*` | One handler per command; build the API body, issue it, reply |
+| `cmd_util` | Shared `[duration] [reason]` parsing and the target guard |
+| `expiry` | 30 s sweeper that lifts expired temp bans/mutes (SPEC section 5.6) |
+| `db` | SQLite worker thread, MPSC job queue, migrations, upserts, actions, eventfd handoff |
 | `cache` | In-memory hash map with TTL (admin cache and other hot data) |
 | `perms` | Role/right checks and the per-chat administrator cache |
 | `commands` | Command table (`commands.def`), lookup, `/help` rendering, `setMyCommands` |

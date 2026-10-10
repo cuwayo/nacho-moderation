@@ -55,6 +55,22 @@ static void on_job(const db_result_t *res, void *ctx)
     cap->last_id = res->i64;
 }
 
+/** @brief Completion that copies an expiry-sweep result into a local. */
+static void capture_sweep(const db_result_t *res, void *ctx)
+{
+    db_result_t *out = ctx;
+    *out = *res;
+    out->status = 1; /* sentinel: the sweep ran */
+}
+
+/** @brief Completion that copies a username-lookup result into a local. */
+static void capture_lookup(const db_result_t *res, void *ctx)
+{
+    db_result_t *out = ctx;
+    out->i64 = res->i64;
+    out->status = 1;
+}
+
 /* Spin db_pump until @p cap records @p want calls, or time out. */
 static int pump_until(db_t *db, const capture_t *cap, int want)
 {
@@ -301,6 +317,108 @@ static void test_bad_args(void **state)
     assert_int_equal(db_pending(NULL), 0);
 }
 
+static void test_action_insert_and_expiry_sweep(void **state)
+{
+    (void)state;
+    char path[32];
+    assert_int_equal(make_db_path(path, sizeof(path)), 0);
+    db_config_t cfg = {.path = path};
+    db_t *db = db_create(&cfg);
+    assert_non_null(db);
+    const db_ops_t *ops = db_ops(db);
+    capture_t cap = {0};
+
+    /* Two actions: one already due (expires_at=100), one in the future. */
+    db_job_t due = {.kind = DB_JOB_INSERT_ACTION,
+                    .id = -100,
+                    .user_id = 7,
+                    .admin_id = 1,
+                    .created_at = 50,
+                    .expires_at = 100};
+    (void)snprintf(due.action, sizeof(due.action), "ban");
+    assert_int_equal(ops->submit(ops->ctx, &due, on_job, &cap), 0);
+    db_job_t future = due;
+    future.user_id = 8;
+    future.expires_at = 100000;
+    assert_int_equal(ops->submit(ops->ctx, &future, on_job, &cap), 0);
+    assert_int_equal(pump_until(db, &cap, 2), 0);
+
+    assert_int_equal(query_scalar(path, "SELECT count(*) FROM actions;"), 2);
+
+    /* Sweep at now=200: only the first row is due. */
+    db_result_t sweep = {0};
+    db_job_t sweep_job = {.kind = DB_JOB_EXPIRE_ACTIONS, .now_unix = 200};
+    assert_int_equal(ops->submit(ops->ctx, &sweep_job, capture_sweep, &sweep), 0);
+    for (int i = 0; i < 20000 && sweep.status != 1; ++i) {
+        db_pump(db);
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 1000000};
+        nanosleep(&ts, NULL);
+    }
+    assert_int_equal(sweep.status, 1);
+    assert_int_equal(sweep.expired_count, 1);
+    assert_int_equal(sweep.expired[0].user_id, 7);
+    assert_string_equal(sweep.expired[0].action, "ban");
+
+    /* Lift the row; a second sweep finds nothing. */
+    db_job_t lift = {.kind = DB_JOB_LIFT_ACTION, .id = sweep.expired[0].id};
+    assert_int_equal(ops->submit(ops->ctx, &lift, on_job, &cap), 0);
+    assert_int_equal(pump_until(db, &cap, 3), 0);
+
+    db_result_t sweep2 = {0};
+    assert_int_equal(ops->submit(ops->ctx, &sweep_job, capture_sweep, &sweep2), 0);
+    for (int i = 0; i < 20000 && sweep2.status != 1; ++i) {
+        db_pump(db);
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 1000000};
+        nanosleep(&ts, NULL);
+    }
+    assert_int_equal(sweep2.expired_count, 0);
+
+    db_destroy(db);
+    unlink(path);
+}
+
+static void test_find_user_by_username(void **state)
+{
+    (void)state;
+    char path[32];
+    assert_int_equal(make_db_path(path, sizeof(path)), 0);
+    db_config_t cfg = {.path = path};
+    db_t *db = db_create(&cfg);
+    const db_ops_t *ops = db_ops(db);
+    capture_t cap = {0};
+
+    db_job_t u = {.kind = DB_JOB_UPSERT_USER, .id = 42};
+    (void)snprintf(u.username, sizeof(u.username), "Ada");
+    assert_int_equal(ops->submit(ops->ctx, &u, on_job, &cap), 0);
+    assert_int_equal(pump_until(db, &cap, 1), 0);
+
+    /* Case-insensitive lookup finds the row. */
+    db_result_t res = {0};
+    db_job_t find = {.kind = DB_JOB_FIND_USER_BY_USERNAME};
+    (void)snprintf(find.username, sizeof(find.username), "ada");
+    assert_int_equal(ops->submit(ops->ctx, &find, capture_lookup, &res), 0);
+    for (int i = 0; i < 20000 && res.status != 1; ++i) {
+        db_pump(db);
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 1000000};
+        nanosleep(&ts, NULL);
+    }
+    assert_int_equal(res.i64, 42);
+
+    /* An unknown username resolves to 0. */
+    db_result_t miss = {0};
+    (void)snprintf(find.username, sizeof(find.username), "nobody");
+    assert_int_equal(ops->submit(ops->ctx, &find, capture_lookup, &miss), 0);
+    for (int i = 0; i < 20000 && miss.status != 1; ++i) {
+        db_pump(db);
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 1000000};
+        nanosleep(&ts, NULL);
+    }
+    assert_int_equal(miss.i64, 0);
+
+    db_destroy(db);
+    unlink(path);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -310,6 +428,8 @@ int main(void)
         cmocka_unit_test(test_upsert_replaces_existing),
         cmocka_unit_test(test_jobs_processed_in_order),
         cmocka_unit_test(test_eventfd_arm_pump_and_rearm),
+        cmocka_unit_test(test_action_insert_and_expiry_sweep),
+        cmocka_unit_test(test_find_user_by_username),
         cmocka_unit_test(test_bad_args),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);

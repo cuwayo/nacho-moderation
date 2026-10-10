@@ -14,10 +14,8 @@
 #include <string.h>
 #include <strings.h>
 
-#include "api_methods.h"
 #include "commands.h"
 #include "tables.h"
-#include "tg/api_pool.h"
 #include "tg/cmd_ctx.h"
 #include "tg/db.h"
 #include "tg/errors.h"
@@ -26,23 +24,20 @@
 #include "tg/tg_types.h"
 #include "tg/util.h"
 
-/**
- * @brief No-op completion for fire-and-forget API calls (replies, upserts).
- *
- * @param[in] res API result.
- * @param[in] ctx Unused.
- */
-static void on_ignore_result(const api_result_t *res, void *ctx)
-{
-    (void)ctx;
-    if (res->status != 0) {
-        util_log(LOG_DEBUG, "router", "fire-and-forget call failed: %d", res->status);
-    }
-}
+/** @brief Number of recent (chat, message) ids retained for /purge. */
+#define ROUTER_RECENT_CAP 2048u
 
 /** @brief The router state. */
 struct router {
     router_config_t cfg; /**< Copied configuration. */
+    /* A bounded ring of the most recent (chat_id, message_id) pairs, used by
+     * /purge to enumerate the ids between a replied-to message and the command. */
+    struct {
+        int64_t chat_id;         /**< Chat the message was in. */
+        int64_t message_id;      /**< Message id. */
+    } recent[ROUTER_RECENT_CAP]; /**< Ring storage. */
+    size_t recent_len;           /**< Number of valid entries (<= ROUTER_RECENT_CAP). */
+    size_t recent_head;          /**< Next write position (ring). */
 };
 
 /* --- Pure parsing ---------------------------------------------------------- */
@@ -193,103 +188,46 @@ int router_resolve_target(const cmd_invocation_t *inv, const tg_message_t *msg, 
     return 0;
 }
 
-/* --- Reply helper ---------------------------------------------------------- */
-
-/** @brief Context for @c router_reply, owned by the router. */
-typedef struct {
-    const tg_api_ops_t *api; /**< API seam. */
-} router_reply_ctx_t;
+/* --- Recent-message ring --------------------------------------------------- */
 
 /**
- * @brief Return the JSON escape for @p c, or NULL if @p c needs no escaping.
+ * @brief Record a (chat_id, message_id) pair in the router's ring.
  *
- * @param[in] c Character to escape.
- *
- * @return The escape sequence, or NULL.
+ * @param[in,out] r       Router.
+ * @param[in]     chat_id Chat.
+ * @param[in]     msg_id  Message id.
  */
-static const char *json_escape(char c)
+static void recent_record(router_t *r, int64_t chat_id, int64_t msg_id)
 {
-    switch (c) {
-    case '"':
-        return "\\\"";
-    case '\\':
-        return "\\\\";
-    case '\n':
-        return "\\n";
-    case '\r':
-        return "\\r";
-    case '\t':
-        return "\\t";
-    default:
-        return NULL;
+    r->recent[r->recent_head].chat_id = chat_id;
+    r->recent[r->recent_head].message_id = msg_id;
+    r->recent_head = (r->recent_head + 1u) % ROUTER_RECENT_CAP;
+    if (r->recent_len < ROUTER_RECENT_CAP) {
+        r->recent_len++;
     }
 }
 
 /**
- * @brief Append the JSON-escaped @p s to @p body at @p off.
+ * @brief Collect the recent ids for @p chat_id, oldest first, into @p out.
  *
- * @param[out] body Destination buffer.
- * @param[in]  cap  Capacity of @p body.
- * @param[in]  off  Current write offset.
- * @param[in]  s    String to append.
+ * @param[in]  r       Router.
+ * @param[in]  chat_id Chat to filter on.
+ * @param[out] out     Destination array.
+ * @param[in]  cap     Capacity of @p out.
  *
- * @return The new offset, or (size_t)-1 if @p body is too small.
+ * @return Number of ids written.
  */
-static size_t json_append(char *body, size_t cap, size_t off, const char *s)
+static size_t recent_collect(const router_t *r, int64_t chat_id, int64_t *out, size_t cap)
 {
-    for (; *s != '\0'; ++s) {
-        const char *esc = json_escape(*s);
-        size_t need = esc != NULL ? strlen(esc) : 1u;
-        if (off + need + 1 >= cap) {
-            return (size_t)-1;
+    size_t n = 0;
+    size_t start = (r->recent_head + ROUTER_RECENT_CAP - r->recent_len) % ROUTER_RECENT_CAP;
+    for (size_t i = 0; i < r->recent_len && n < cap; ++i) {
+        size_t idx = (start + i) % ROUTER_RECENT_CAP;
+        if (r->recent[idx].chat_id == chat_id) {
+            out[n++] = r->recent[idx].message_id;
         }
-        if (esc != NULL) {
-            (void)memcpy(body + off, esc, need);
-        } else {
-            body[off] = *s;
-        }
-        off += need;
-        body[off] = '\0';
     }
-    return off;
-}
-
-/**
- * @brief Send an HTML reply through the API seam (the @c cmd_ctx.reply impl).
- *
- * @param[in] ctx      The @ref cmd_ctx.
- * @param[in] html     HTML text.
- * @param[in] reply_to Message id to reply to (0 for none).
- *
- * @return 0 if queued, negative errno on failure.
- */
-static int router_reply(struct cmd_ctx *ctx, const char *html, int64_t reply_to)
-{
-    router_reply_ctx_t *rc = ctx->reply_ctx;
-    char body[8192];
-    int n = snprintf(body, sizeof(body), "{\"chat_id\":%lld,\"text\":\"", (long long)ctx->chat_id);
-    if (n < 0 || (size_t)n >= sizeof(body)) {
-        return -ENOSPC;
-    }
-    size_t off = json_append(body, sizeof(body), (size_t)n, html);
-    if (off == (size_t)-1) {
-        return -ENOSPC;
-    }
-
-    if (reply_to != 0) {
-        n = snprintf(body + off, sizeof(body) - off,
-                     "\",\"parse_mode\":\"HTML\",\"reply_to_message_id\":%lld}",
-                     (long long)reply_to);
-    } else {
-        n = snprintf(body + off, sizeof(body) - off, "\",\"parse_mode\":\"HTML\"}");
-    }
-    if (n < 0 || (size_t)n >= sizeof(body) - off) {
-        return -ENOSPC;
-    }
-    off += (size_t)n;
-
-    return rc->api->request(rc->api->ctx, METHOD_SEND_MESSAGE, body, off, ctx->chat_id, 0,
-                            on_ignore_result, NULL);
+    return n;
 }
 
 /* --- DB upserts ------------------------------------------------------------ */
@@ -335,144 +273,221 @@ static void upsert_message(router_t *r, const tg_message_t *msg)
 
 /* --- Dispatch -------------------------------------------------------------- */
 
-/** @brief Context for the permission-gated dispatch callback. */
-typedef struct {
-    router_t *router;         /**< Router. */
-    tg_message_t message;     /**< Copy of the originating message (async-safe). */
-    cmd_invocation_t inv;     /**< Parsed invocation. */
-    int64_t target_id;        /**< Resolved target (0 if none). */
-    router_reply_ctx_t reply; /**< Reply context. */
+/** @brief Context for the asynchronous dispatch chain. */
+typedef struct dispatch {
+    router_t *router;                 /**< Router. */
+    cmd_call_t *call;                 /**< Reference-counted invocation. */
+    cmd_invocation_t inv;             /**< Parsed invocation. */
+    int is_group;                     /**< 1 if the chat is a group/supergroup. */
+    char username[ROUTER_TARGET_MAX]; /**< The \@username without the leading '@'. */
 } dispatch_t;
 
-/**
- * @brief Send a plain HTML reply to the command's chat.
- *
- * @param[in] d    Dispatch context.
- * @param[in] html HTML text.
- */
-static void reply_text(dispatch_t *d, const char *html)
-{
-    struct cmd_ctx ctx = {
-        .chat_id = d->message.chat.id, .reply = router_reply, .reply_ctx = &d->reply};
-    (void)ctx.reply(&ctx, html, d->message.message_id);
-}
+/** @brief Resolve the admin list (if a group) and dispatch (defined below). */
+static void dispatch_with_admins(dispatch_t *d);
 
 /**
- * @brief Send a permission-denial reply for @p rc.
+ * @brief Fill the invocation's role-derived fields and run the command handler.
  *
- * @param[in] d  Dispatch context (for the chat id and reply hook).
- * @param[in] rc The permission error (-ERR_TG_API or -ERR_PERM).
+ * @param[in] d      Dispatch context.
+ * @param[in] admins Administrator list (may be NULL for private chats).
  */
-static void reply_denied(dispatch_t *d, int rc)
+static void run_handler(dispatch_t *d, const perms_admins_t *admins)
 {
-    reply_text(d, rc == -ERR_TG_API ? "I lack the rights to do that in this chat."
-                                    : "You are not allowed to use that command.");
-}
-
-/**
- * @brief Build the handler context and invoke the command handler.
- *
- * @param[in] d       Dispatch context.
- * @param[in] subject Caller's resolved subject.
- * @param[in] cmd     Command to run.
- */
-static void run_handler(dispatch_t *d, const perms_subject_t *subject, const cmd_desc_t *cmd)
-{
-    const tg_message_t *msg = &d->message;
-    arena_t arena;
-    if (arena_init(&arena, 1024) != 0) {
+    const cmd_desc_t *cmd = cmd_lookup(d->inv.name);
+    if (cmd == NULL) {
         return;
     }
-    struct cmd_ctx cctx = {
-        .cmd = cmd,
-        .chat_id = msg->chat.id,
-        .user_id = msg->from.id,
-        .target_id = d->target_id,
-        .args = d->inv.args,
-        .msg = msg,
-        .is_group =
-            strcmp(msg->chat.type, "group") == 0 || strcmp(msg->chat.type, "supergroup") == 0,
-        .role = subject->role,
-        .is_sudo = subject->is_sudo,
-        .reply = router_reply,
-        .reply_ctx = &d->reply,
-    };
-    int hrc = cmd->handler(&cctx);
+    cmd_call_t *call = d->call;
+    struct cmd_ctx *ctx = cmd_call_ctx(call);
+    tg_message_t *msg = cmd_call_message(call);
+
+    perms_subject_t subject;
+    (void)perms_subject_from_admins(d->router->cfg.perms, admins, ctx->user_id, &subject);
+
+    ctx->cmd = cmd;
+    ctx->chat_id = msg->chat.id;
+    ctx->user_id = msg->from.id;
+    ctx->bot_id = d->router->cfg.bot_id;
+    ctx->is_group = d->is_group;
+    ctx->role = subject.role;
+    ctx->is_sudo = subject.is_sudo;
+    ctx->args = d->inv.args;
+    ctx->target_role = perms_role_of(admins, ctx->target_id);
+    ctx->bot_has_right = perms_bot_has_right(admins, d->router->cfg.bot_id, cmd->bot_right);
+    ctx->wall = d->router->cfg.wall;
+
+    /* A human-readable label for replies: the reply sender's name when the target
+     * came from a reply, otherwise the \@username / numeric token. */
+    if (ctx->target_id != 0) {
+        if (msg->has_reply && msg->reply_from.id == ctx->target_id &&
+            msg->reply_from.first_name[0] != '\0') {
+            (void)cmd_call_set_target_label(call, msg->reply_from.first_name);
+        } else if (d->inv.target[0] != '\0') {
+            (void)cmd_call_set_target_label(call, d->inv.target);
+        }
+    }
+
+    int hrc = cmd->handler(ctx);
     if (hrc != 0) {
         util_log(LOG_WARN, "router", "command '%s' returned %d", cmd->name, hrc);
     }
-    arena_destroy(&arena);
 }
 
 /**
- * @brief Build a subject without consulting the admin list (member + sudo).
+ * @brief Reply with a permission denial chosen from the error class.
  *
- * Used for private chats, where `getChatAdministrators` is not available at all.
- *
- * @param[in]  r       Router.
- * @param[in]  user_id Caller's user id.
- * @param[out] out     Receives the subject.
+ * @param[in] ctx Context.
+ * @param[in] rc  The permission error (-ERR_TG_API or -ERR_PERM).
  */
-static void subject_local(const router_t *r, int64_t user_id, perms_subject_t *out)
+static void reply_denied(struct cmd_ctx *ctx, int rc)
 {
-    memset(out, 0, sizeof(*out));
-    out->role = ROLE_ANYONE; /* a "member"; not an administrator */
-    out->is_sudo = r->cfg.perms != NULL && perms_is_sudo(r->cfg.perms, user_id);
+    int64_t reply_to = ctx->msg != NULL ? ctx->msg->message_id : 0;
+    (void)cmd_ctx_reply_plain(ctx, reply_to,
+                              rc == -ERR_TG_API ? "I lack the rights to do that in this chat."
+                                                : "You are not allowed to use that command.");
 }
 
 /**
  * @brief Gate on permissions and run the command handler.
  *
- * @param[in] d       Dispatch context.
- * @param[in] subject Caller's resolved subject.
+ * @param[in] d      Dispatch context.
+ * @param[in] admins Administrator list (may be NULL for private chats).
  */
-static void dispatch_subject(dispatch_t *d, const perms_subject_t *subject)
+static void dispatch_subject(dispatch_t *d, const perms_admins_t *admins)
 {
     const cmd_desc_t *cmd = cmd_lookup(d->inv.name);
     if (cmd == NULL) {
         return; /* unknown command: ignore silently (another bot's, or a typo) */
     }
+    struct cmd_ctx *ctx = cmd_call_ctx(d->call);
 
     /* Group-only commands are rejected in private chats (SPEC section 5.2). */
-    int is_group = strcmp(d->message.chat.type, "group") == 0 ||
-                   strcmp(d->message.chat.type, "supergroup") == 0;
-    if (!is_group && (cmd->flags & CMDF_GROUP_ONLY) != 0u) {
-        reply_text(d, "That command is only available in groups.");
+    if (!d->is_group && (cmd->flags & CMDF_GROUP_ONLY) != 0u) {
+        (void)cmd_ctx_reply_plain(ctx, ctx->msg != NULL ? ctx->msg->message_id : 0,
+                                  "That command is only available in groups.");
         return;
     }
 
-    /* The bot must hold the command's right; a per-right check of the BOT needs
-     * its own ChatMember, which arrives with the moderation commands (M4). Until
-     * then treat the bot as holding its rights when the fetch succeeded. */
-    int rc = perms_check(subject, cmd, 1);
+    int bot_has = perms_bot_has_right(admins, d->router->cfg.bot_id, cmd->bot_right);
+    perms_subject_t subject;
+    (void)perms_subject_from_admins(d->router->cfg.perms, admins, ctx->user_id, &subject);
+    int rc = perms_check(&subject, cmd, bot_has);
     if (rc != 0) {
-        reply_denied(d, rc);
+        reply_denied(ctx, rc);
         return;
     }
-    run_handler(d, subject, cmd);
+    run_handler(d, admins);
 }
 
 /**
- * @brief Subject-resolution callback: gate on permissions, then run the handler.
+ * @brief \@username-lookup completion: set the target, then dispatch.
  *
- * @param[in] subject Caller's subject (NULL on resolution failure).
- * @param[in] status  Resolution status.
- * @param[in] ctx     The @ref dispatch_t.
+ * @param[in] res DB result (its @c i64 is the resolved user id, 0 if unknown).
+ * @param[in] user The @ref dispatch_t.
  */
-static void on_subject(const perms_subject_t *subject, int status, void *ctx)
+static void on_username_resolved(const db_result_t *res, void *user)
 {
-    dispatch_t *d = ctx;
-    if (status != 0 || subject == NULL) {
-        /* The admin fetch failed (e.g. a transient Telegram error). Reply rather
-         * than dropping the command silently, and never misreport it as a
-         * permission denial. */
-        util_log(LOG_WARN, "router", "permission check failed: %d", status);
-        reply_text(d, "I could not verify permissions in this chat; please try again.");
+    dispatch_t *d = user;
+    struct cmd_ctx *ctx = cmd_call_ctx(d->call);
+    if (res->status == 0 && res->i64 != 0) {
+        ctx->target_id = res->i64;
+    } else if (res->status == 0) {
+        (void)cmd_ctx_reply_plain(ctx, ctx->msg != NULL ? ctx->msg->message_id : 0,
+                                  "I do not know that username; ask them to speak first.");
+        cmd_call_release(d->call);
         free(d);
         return;
     }
-    dispatch_subject(d, subject);
+    dispatch_with_admins(d);
+}
+
+/**
+ * @brief Admin-fetch completion: dispatch, then release the call reference.
+ *
+ * @param[in] admins Administrator list (NULL on failure).
+ * @param[in] status Fetch status.
+ * @param[in] user   The @ref dispatch_t.
+ */
+static void on_admins(const perms_admins_t *admins, int status, void *user)
+{
+    dispatch_t *d = user;
+    struct cmd_ctx *ctx = cmd_call_ctx(d->call);
+    if (status != 0) {
+        util_log(LOG_WARN, "router", "permission check failed: %d", status);
+        (void)cmd_ctx_reply_plain(ctx, ctx->msg != NULL ? ctx->msg->message_id : 0,
+                                  "I could not verify permissions in this chat; please try again.");
+    } else {
+        dispatch_subject(d, admins);
+    }
+    cmd_call_release(d->call);
     free(d);
+}
+
+/**
+ * @brief Start the admin fetch (group) or dispatch immediately (private chat).
+ *
+ * @param[in] d Dispatch context.
+ */
+static void dispatch_with_admins(dispatch_t *d)
+{
+    struct cmd_ctx *ctx = cmd_call_ctx(d->call);
+    if (d->router->cfg.perms == NULL || !d->is_group) {
+        dispatch_subject(d, NULL);
+        cmd_call_release(d->call);
+        free(d);
+        return;
+    }
+    int rc = perms_admins_get(d->router->cfg.perms, ctx->chat_id, on_admins, d);
+    if (rc != 0) {
+        (void)cmd_ctx_reply_plain(ctx, ctx->msg != NULL ? ctx->msg->message_id : 0,
+                                  "I could not verify permissions in this chat; please try again.");
+        cmd_call_release(d->call);
+        free(d);
+    }
+}
+
+/**
+ * @brief Resolve the dispatch target, starting an \@username lookup when needed.
+ *
+ * Reply-to and numeric targets are set synchronously. An \@username needs a DB
+ * lookup, which is submitted here; the dispatch continues in
+ * @c on_username_resolved. On success the caller must not dispatch again.
+ *
+ * @param[in] d Dispatch context (target fields filled in place).
+ *
+ * @return 0 if the caller should continue dispatching, 1 if an asynchronous
+ *         lookup was started (or a reply was sent), negative errno on failure.
+ */
+static int resolve_dispatch_target(dispatch_t *d)
+{
+    struct cmd_ctx *ctx = cmd_call_ctx(d->call);
+    const tg_message_t *copy = cmd_call_message(d->call);
+    int64_t target = 0;
+    int resolved = router_resolve_target(&d->inv, copy, &target);
+    if (resolved == 0) {
+        ctx->target_id = target;
+        return 0;
+    }
+    if (resolved != -ENOTSUP) {
+        return 0; /* no target: handlers report it themselves */
+    }
+    /* An \@username: look it up through the DB, then continue asynchronously. */
+    (void)snprintf(d->username, sizeof(d->username), "%s", d->inv.target + 1);
+    if (d->router->cfg.db == NULL || d->router->cfg.db->submit == NULL) {
+        (void)cmd_ctx_reply_plain(ctx, copy->message_id, "I cannot resolve usernames right now.");
+        /* Terminal: no lookup will run, so release the router's reference here (the
+         * reply request keeps the invocation alive until its callback). */
+        cmd_call_release(d->call);
+        free(d);
+        return 1;
+    }
+    db_job_t job = {.kind = DB_JOB_FIND_USER_BY_USERNAME};
+    (void)snprintf(job.username, sizeof(job.username), "%s", d->username);
+    int rc = d->router->cfg.db->submit(d->router->cfg.db->ctx, &job, on_username_resolved, d);
+    if (rc != 0) {
+        return rc;
+    }
+    return 1;
 }
 
 /**
@@ -490,49 +505,74 @@ static int handle_message(router_t *r, const tg_update_t *upd)
     /* Upsert the sender/chat for every non-service message. */
     upsert_message(r, msg);
 
+    /* Remember the message id so a later /purge can enumerate a range. */
+    if (msg->chat.id != 0 && msg->message_id != 0) {
+        recent_record(r, msg->chat.id, msg->message_id);
+    }
+
     if (msg->is_service || msg->from.is_bot || msg->text[0] == '\0') {
         return 0; /* service messages, bots and non-text are not commands */
     }
 
+    cmd_invocation_t inv;
+    int is_cmd = router_parse_command(msg->text, r->cfg.bot_username, &inv);
+    if (is_cmd <= 0 || inv.addressed_to_other_bot) {
+        return 0;
+    }
+
+    cmd_call_t *call = cmd_call_create(r->cfg.api, r->cfg.db, r->cfg.wall);
+    if (call == NULL) {
+        return -ENOMEM;
+    }
+    tg_message_t *copy = cmd_call_message(call);
+    *copy = *msg;
+
     dispatch_t *d = calloc(1, sizeof(*d));
     if (d == NULL) {
+        cmd_call_release(call);
         return -ENOMEM;
     }
     d->router = r;
-    /* Copy the message: the admin fetch is asynchronous, so the caller's stack
-     * tg_update_t will be gone by the time the callback runs. */
-    d->message = *msg;
-    d->reply.api = r->cfg.api;
+    d->call = call;
+    d->inv = inv;
+    /* The invocation was parsed from the borrowed update text; re-point @args into
+     * the copied message so it stays valid across the asynchronous dispatch. */
+    if (inv.args >= msg->text && inv.args <= msg->text + strlen(msg->text)) {
+        d->inv.args = copy->text + (inv.args - msg->text);
+    }
+    d->is_group =
+        strcmp(copy->chat.type, "group") == 0 || strcmp(copy->chat.type, "supergroup") == 0;
 
-    int is_cmd = router_parse_command(msg->text, r->cfg.bot_username, &d->inv);
-    if (is_cmd <= 0 || d->inv.addressed_to_other_bot) {
-        free(d);
-        return 0;
+    /* Fill the identity fields up front: the admin fetch below reads chat_id, and
+     * every reply/record path needs chat_id/user_id/bot_id regardless of how the
+     * dispatch chain resolves the caller's role. */
+    struct cmd_ctx *ctx = cmd_call_ctx(call);
+    ctx->chat_id = copy->chat.id;
+    ctx->user_id = copy->from.id;
+    ctx->bot_id = r->cfg.bot_id;
+    ctx->is_group = d->is_group;
+    ctx->args = d->inv.args;
+    ctx->wall = r->cfg.wall;
+
+    /* Resolve the target: reply-to wins, then numeric id, then \@username. */
+    int trc = resolve_dispatch_target(d);
+    if (trc != 0) {
+        if (trc < 0) {
+            cmd_call_release(call);
+            free(d);
+            return trc;
+        }
+        return 0; /* an asynchronous lookup owns the dispatch now */
     }
 
-    (void)router_resolve_target(&d->inv, msg, &d->target_id);
-
-    int is_group =
-        strcmp(msg->chat.type, "group") == 0 || strcmp(msg->chat.type, "supergroup") == 0;
-
-    /* A private chat has no administrator list (getChatAdministrators is rejected
-     * there), so resolve the subject locally: the caller is a plain member unless
-     * configured as sudo, and role-sensitive output like /help is rendered for
-     * that role. Group chats resolve the real role from the (cached) admin list so
-     * administrators see the full command set. */
-    if (r->cfg.perms == NULL || !is_group) {
-        perms_subject_t subject;
-        subject_local(r, msg->from.id, &subject);
-        dispatch_subject(d, &subject);
-        free(d);
-        return 0;
+    /* Collect the recent ids for /purge before dispatching. */
+    if (cmd_lookup(d->inv.name) != NULL) {
+        int64_t ids[CMD_RECENT_MAX];
+        size_t n = recent_collect(r, copy->chat.id, ids, CMD_RECENT_MAX);
+        (void)cmd_call_set_recent(call, ids, n);
     }
 
-    int rc = perms_subject_get(r->cfg.perms, msg->chat.id, msg->from.id, on_subject, d);
-    if (rc != 0) {
-        free(d);
-        return rc;
-    }
+    dispatch_with_admins(d);
     return 0;
 }
 

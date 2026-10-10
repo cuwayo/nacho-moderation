@@ -35,6 +35,18 @@
 #define DB_SQL_CHATS                                                                               \
     "INSERT INTO chats(chat_id, title, type) VALUES(?1, ?2, ?3) "                                  \
     "ON CONFLICT(chat_id) DO UPDATE SET title=excluded.title, type=excluded.type"
+/** @brief Prepared insert for an expiring moderation action. */
+#define DB_SQL_ACTION                                                                              \
+    "INSERT INTO actions(chat_id, user_id, admin_id, action, reason, created_at, expires_at) "     \
+    "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+/** @brief Select due, un-lifted expiring actions (SPEC section 5.6). */
+#define DB_SQL_EXPIRE                                                                              \
+    "SELECT id, chat_id, user_id, action FROM actions "                                            \
+    "WHERE lifted=0 AND expires_at IS NOT NULL AND expires_at<=?1 LIMIT ?2"
+/** @brief Mark one action row as lifted. */
+#define DB_SQL_LIFT "UPDATE actions SET lifted=1 WHERE id=?1"
+/** @brief Resolve a username (case-insensitive) to a user id. */
+#define DB_SQL_FIND_USER "SELECT user_id FROM users WHERE username=?1 COLLATE NOCASE LIMIT 1"
 
 /** @brief Schema migration v0 -> v1 (SPEC section 6). Idempotent via IF NOT EXISTS. */
 static const char *const SCHEMA_V1 =
@@ -182,18 +194,26 @@ static int migrate(sqlite3 *sdb)
     return 0;
 }
 
+/** @brief Reusable prepared statements owned by the worker thread. */
+typedef struct {
+    sqlite3_stmt *upsert_user;    /**< DB_SQL_USERS. */
+    sqlite3_stmt *upsert_chat;    /**< DB_SQL_CHATS. */
+    sqlite3_stmt *insert_action;  /**< DB_SQL_ACTION. */
+    sqlite3_stmt *expire_actions; /**< DB_SQL_EXPIRE. */
+    sqlite3_stmt *lift_action;    /**< DB_SQL_LIFT. */
+    sqlite3_stmt *find_user;      /**< DB_SQL_FIND_USER. */
+} db_stmts_t;
+
 /**
- * @brief Open the database and prepare the reusable upsert statements.
+ * @brief Open the database and prepare the reusable statements.
  *
  * @param[in]  path Path to the SQLite file.
  * @param[out] out_db Receives the handle.
- * @param[out] out_user Receives the users upsert statement.
- * @param[out] out_chat Receives the chats upsert statement.
+ * @param[out] out_st Receives the prepared statements.
  *
  * @return 0 on success, -ERR_DB on failure (partial handles are cleaned up).
  */
-static int worker_open(const char *path, sqlite3 **out_db, sqlite3_stmt **out_user,
-                       sqlite3_stmt **out_chat)
+static int worker_open(const char *path, sqlite3 **out_db, db_stmts_t *out_st)
 {
     sqlite3 *sdb = NULL;
     if (sqlite3_open_v2(path, &sdb, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) !=
@@ -205,55 +225,123 @@ static int worker_open(const char *path, sqlite3 **out_db, sqlite3_stmt **out_us
         sqlite3_close(sdb);
         return -ERR_DB;
     }
-    sqlite3_stmt *user = NULL;
-    sqlite3_stmt *chat = NULL;
-    if (sqlite3_prepare_v2(sdb, DB_SQL_USERS, -1, &user, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(sdb, DB_SQL_CHATS, -1, &chat, NULL) != SQLITE_OK) {
-        sqlite3_finalize(user);
-        sqlite3_finalize(chat);
-        sqlite3_close(sdb);
-        return -ERR_DB;
+    db_stmts_t st = {0};
+    struct {
+        sqlite3_stmt **slot;
+        const char *sql;
+    } prep[] = {
+        {&st.upsert_user, DB_SQL_USERS},    {&st.upsert_chat, DB_SQL_CHATS},
+        {&st.insert_action, DB_SQL_ACTION}, {&st.expire_actions, DB_SQL_EXPIRE},
+        {&st.lift_action, DB_SQL_LIFT},     {&st.find_user, DB_SQL_FIND_USER},
+    };
+    for (size_t i = 0; i < sizeof(prep) / sizeof(prep[0]); ++i) {
+        if (sqlite3_prepare_v2(sdb, prep[i].sql, -1, prep[i].slot, NULL) != SQLITE_OK) {
+            sqlite3_finalize(st.upsert_user);
+            sqlite3_finalize(st.upsert_chat);
+            sqlite3_finalize(st.insert_action);
+            sqlite3_finalize(st.expire_actions);
+            sqlite3_finalize(st.lift_action);
+            sqlite3_finalize(st.find_user);
+            sqlite3_close(sdb);
+            return -ERR_DB;
+        }
     }
     *out_db = sdb;
-    *out_user = user;
-    *out_chat = chat;
+    *out_st = st;
     return 0;
+}
+
+/**
+ * @brief Run a prepared statement expected to complete with SQLITE_DONE.
+ *
+ * @param[in] s Statement to step.
+ *
+ * @return 0 on success, -ERR_DB on failure.
+ */
+static int step_done(sqlite3_stmt *s)
+{
+    int rc = sqlite3_step(s) == SQLITE_DONE ? 0 : -ERR_DB;
+    sqlite3_reset(s);
+    sqlite3_clear_bindings(s);
+    return rc;
 }
 
 /**
  * @brief Execute one job with the prepared statements.
  *
- * @param[in] user_stmt Prepared users upsert.
- * @param[in] chat_stmt Prepared chats upsert.
- * @param[in] job       Job to run.
+ * @param[in] st  Prepared statements.
+ * @param[in] job Job to run.
+ * @param[out] res Result to fill (only the fields the job produces).
  *
  * @return 0 on success, -ERR_DB on failure.
  */
-static int worker_execute(sqlite3_stmt *user_stmt, sqlite3_stmt *chat_stmt, const db_job_t *job)
+static int worker_execute(db_stmts_t *st, const db_job_t *job, db_result_t *res)
 {
-    sqlite3_stmt *st = NULL;
-    if (job->kind == DB_JOB_UPSERT_USER) {
-        st = user_stmt;
-        sqlite3_bind_int64(st, 1, job->id);
-        sqlite3_bind_text(st, 2, job->username, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(st, 3, job->first_name, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(st, 4, job->last_seen);
-    } else if (job->kind == DB_JOB_UPSERT_CHAT) {
-        st = chat_stmt;
-        sqlite3_bind_int64(st, 1, job->id);
-        sqlite3_bind_text(st, 2, job->title, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(st, 3, job->chat_type, -1, SQLITE_TRANSIENT);
-    } else {
+    switch (job->kind) {
+    case DB_JOB_UPSERT_USER: {
+        sqlite3_stmt *s = st->upsert_user;
+        sqlite3_bind_int64(s, 1, job->id);
+        sqlite3_bind_text(s, 2, job->username, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(s, 3, job->first_name, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(s, 4, job->last_seen);
+        return step_done(s);
+    }
+    case DB_JOB_UPSERT_CHAT: {
+        sqlite3_stmt *s = st->upsert_chat;
+        sqlite3_bind_int64(s, 1, job->id);
+        sqlite3_bind_text(s, 2, job->title, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(s, 3, job->chat_type, -1, SQLITE_TRANSIENT);
+        return step_done(s);
+    }
+    case DB_JOB_INSERT_ACTION: {
+        sqlite3_stmt *s = st->insert_action;
+        sqlite3_bind_int64(s, 1, job->id); /* chat_id */
+        sqlite3_bind_int64(s, 2, job->user_id);
+        sqlite3_bind_int64(s, 3, job->admin_id);
+        sqlite3_bind_text(s, 4, job->action, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(s, 5, job->reason, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(s, 6, job->created_at);
+        sqlite3_bind_int64(s, 7, job->expires_at);
+        return step_done(s);
+    }
+    case DB_JOB_LIFT_ACTION: {
+        sqlite3_stmt *s = st->lift_action;
+        sqlite3_bind_int64(s, 1, job->id);
+        return step_done(s);
+    }
+    case DB_JOB_FIND_USER_BY_USERNAME: {
+        sqlite3_stmt *s = st->find_user;
+        sqlite3_bind_text(s, 1, job->username, -1, SQLITE_TRANSIENT);
+        res->i64 = 0;
+        if (sqlite3_step(s) == SQLITE_ROW) {
+            res->i64 = sqlite3_column_int64(s, 0);
+        }
+        sqlite3_reset(s);
+        sqlite3_clear_bindings(s);
+        return 0;
+    }
+    case DB_JOB_EXPIRE_ACTIONS: {
+        sqlite3_stmt *s = st->expire_actions;
+        sqlite3_bind_int64(s, 1, job->now_unix);
+        sqlite3_bind_int(s, 2, (int)DB_MAX_EXPIRED);
+        res->expired_count = 0;
+        while (res->expired_count < DB_MAX_EXPIRED && sqlite3_step(s) == SQLITE_ROW) {
+            db_expired_action_t *e = &res->expired[res->expired_count];
+            e->id = sqlite3_column_int64(s, 0);
+            e->chat_id = sqlite3_column_int64(s, 1);
+            e->user_id = sqlite3_column_int64(s, 2);
+            const unsigned char *act = sqlite3_column_text(s, 3);
+            (void)snprintf(e->action, sizeof(e->action), "%s",
+                           act != NULL ? (const char *)act : "");
+            res->expired_count++;
+        }
+        sqlite3_reset(s);
+        sqlite3_clear_bindings(s);
+        return 0;
+    }
+    default:
         return -ERR_DB;
     }
-
-    int rc = 0;
-    if (sqlite3_step(st) != SQLITE_DONE) {
-        rc = -ERR_DB;
-    }
-    sqlite3_reset(st);
-    sqlite3_clear_bindings(st);
-    return rc;
 }
 
 /* --- Worker thread --------------------------------------------------------- */
@@ -273,9 +361,8 @@ static void *db_worker(void *arg)
     db_t *db = arg;
 
     sqlite3 *sdb = NULL;
-    sqlite3_stmt *user_stmt = NULL;
-    sqlite3_stmt *chat_stmt = NULL;
-    int rc = worker_open(db->path, &sdb, &user_stmt, &chat_stmt);
+    db_stmts_t st = {0};
+    int rc = worker_open(db->path, &sdb, &st);
 
     pthread_mutex_lock(&db->mu);
     db->init_status = rc;
@@ -308,7 +395,7 @@ static void *db_worker(void *arg)
             free(req);
             continue;
         }
-        resp->res.status = worker_execute(user_stmt, chat_stmt, &req->job);
+        resp->res.status = worker_execute(&st, &req->job, &resp->res);
         resp->cb = req->cb;
         resp->user = req->user;
         free(req);
@@ -328,8 +415,12 @@ static void *db_worker(void *arg)
         (void)n;
     }
 
-    sqlite3_finalize(user_stmt);
-    sqlite3_finalize(chat_stmt);
+    sqlite3_finalize(st.upsert_user);
+    sqlite3_finalize(st.upsert_chat);
+    sqlite3_finalize(st.insert_action);
+    sqlite3_finalize(st.expire_actions);
+    sqlite3_finalize(st.lift_action);
+    sqlite3_finalize(st.find_user);
     sqlite3_close(sdb);
     return NULL;
 }

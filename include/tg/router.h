@@ -43,12 +43,13 @@ typedef struct {
 
 /** @brief Router configuration. All pointers must outlive the router. */
 typedef struct {
-    const tg_api_ops_t *api;  /**< API seam (replies + admin fetch). */
-    const db_ops_t *db;       /**< DB seam (user/chat upserts). */
-    perms_t *perms;           /**< Permission engine. */
-    const clock_ops_t *clock; /**< Injected clock. */
-    int64_t bot_id;           /**< The bot's own user id. */
-    const char *bot_username; /**< The bot's username (no `\@`); may be NULL. */
+    const tg_api_ops_t *api;      /**< API seam (replies + admin fetch). */
+    const db_ops_t *db;           /**< DB seam (user/chat upserts, target lookup). */
+    perms_t *perms;               /**< Permission engine. */
+    const clock_ops_t *clock;     /**< Injected monotonic clock (unused for now). */
+    const wall_clock_ops_t *wall; /**< Injected wall clock (expiry/until_date). */
+    int64_t bot_id;               /**< The bot's own user id. */
+    const char *bot_username;     /**< The bot's username (no `\@`); may be NULL. */
 } router_config_t;
 
 /** @brief The router (opaque; see router.c). */
@@ -58,7 +59,7 @@ typedef struct router router_t;
  * @brief Parse a message text into a command invocation.
  *
  * Recognizes a leading `/name` or `/name@bot`, lowercases the name, and treats the
- * text after the first space as arguments. A leading `@username` or a run of digits
+ * text after the first space as arguments. A leading `\@username` or a run of digits
  * in the arguments is captured as the target.
  *
  * @param[in]  text         Message text (must not be NULL).
@@ -77,14 +78,15 @@ int router_parse_command(const char *text, const char *bot_username, cmd_invocat
  *
  * Resolution order (SPEC section 5.2): the replied-to message's sender, then a
  * numeric user id in the target token. `\@username` resolution needs a users-table
- * lookup that lands with the moderation commands (M4); it reports -ENOTSUP here.
+ * lookup, which the router performs asynchronously; this helper reports -ENOTSUP
+ * for an `\@username` so the caller can start that lookup.
  *
  * @param[in]  inv Parsed invocation.
  * @param[in]  msg Originating message.
  * @param[out] out Receives the resolved user id (0 if none was resolved).
  *
  * @return 0 if a target was resolved, 1 if there was no target, -ENOTSUP for an
- *         unresolvable `\@username`, -EINVAL on bad arguments.
+ *         unresolvable `\@username` (caller resolves it), -EINVAL on bad arguments.
  * @thread_safety Safe (no shared state).
  */
 int router_resolve_target(const cmd_invocation_t *inv, const tg_message_t *msg, int64_t *out);

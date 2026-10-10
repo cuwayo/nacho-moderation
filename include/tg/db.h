@@ -35,11 +35,21 @@
 #define DB_TITLE_MAX 256
 /** @brief Maximum length of a stored chat type. */
 #define DB_CHAT_TYPE_MAX 24
+/** @brief Maximum length of a stored moderation action name (e.g. "ban", "mute"). */
+#define DB_ACTION_MAX 24
+/** @brief Maximum length of a stored moderation reason. */
+#define DB_REASON_MAX 256
+/** @brief Maximum number of expired actions returned by one expiry sweep. */
+#define DB_MAX_EXPIRED 32u
 
 /** @brief Which operation a @ref db_job_t performs. */
 typedef enum {
-    DB_JOB_UPSERT_USER = 0, /**< Insert/update a row in `users`. */
-    DB_JOB_UPSERT_CHAT      /**< Insert/update a row in `chats`. */
+    DB_JOB_UPSERT_USER = 0,      /**< Insert/update a row in `users`. */
+    DB_JOB_UPSERT_CHAT,          /**< Insert/update a row in `chats`. */
+    DB_JOB_INSERT_ACTION,        /**< Insert an expiring action into `actions`. */
+    DB_JOB_EXPIRE_ACTIONS,       /**< Fetch due action rows into @ref db_result_t.expired. */
+    DB_JOB_LIFT_ACTION,          /**< Mark one `actions` row as lifted. */
+    DB_JOB_FIND_USER_BY_USERNAME /**< Resolve a username to a user id (`i64`). */
 } db_job_kind_t;
 
 /**
@@ -47,21 +57,39 @@ typedef enum {
  *
  * Fixed-size so it can be copied by value through the seam with no ownership
  * transfer: the caller may reuse or discard @p job immediately after submit.
+ * Only the fields relevant to @ref kind are read.
  */
 typedef struct {
-    db_job_kind_t kind;                 /**< Operation to perform. */
-    int64_t id;                         /**< user_id (users) or chat_id (chats). */
-    int64_t last_seen;                  /**< Unix seconds; users only. */
-    char username[DB_USERNAME_MAX];     /**< users.username. */
+    db_job_kind_t kind;             /**< Operation to perform. */
+    int64_t id;                     /**< user_id (users) | chat_id (chats) | action id (lift). */
+    int64_t last_seen;              /**< Unix seconds; users only. */
+    int64_t user_id;                /**< actions.user_id (the target). */
+    int64_t admin_id;               /**< actions.admin_id (the actor). */
+    int64_t created_at;             /**< actions.created_at (Unix seconds). */
+    int64_t expires_at;             /**< actions.expires_at (Unix seconds; <=0 = permanent). */
+    int64_t now_unix;               /**< Cutoff for DB_JOB_EXPIRE_ACTIONS. */
+    char username[DB_USERNAME_MAX]; /**< users.username, or the lookup key. */
     char first_name[DB_FIRST_NAME_MAX]; /**< users.first_name. */
     char title[DB_TITLE_MAX];           /**< chats.title. */
     char chat_type[DB_CHAT_TYPE_MAX];   /**< chats.type. */
+    char action[DB_ACTION_MAX];         /**< actions.action ("ban"/"mute"). */
+    char reason[DB_REASON_MAX];         /**< actions.reason. */
 } db_job_t;
+
+/** @brief One expired action returned by a @ref DB_JOB_EXPIRE_ACTIONS sweep. */
+typedef struct {
+    int64_t id;                 /**< actions.id (for DB_JOB_LIFT_ACTION). */
+    int64_t chat_id;            /**< Chat the action applies to. */
+    int64_t user_id;            /**< User the action applies to. */
+    char action[DB_ACTION_MAX]; /**< Action name ("ban"/"mute"). */
+} db_expired_action_t;
 
 /** @brief Outcome of a DB job. */
 typedef struct {
-    int status;  /**< 0 on success, negative @ref err_class_t otherwise. */
-    int64_t i64; /**< Scalar result (unused by the M3 upserts). */
+    int status;             /**< 0 on success, negative @ref err_class_t otherwise. */
+    int64_t i64;            /**< Scalar result (user id for the username lookup, else 0). */
+    unsigned expired_count; /**< Entries in @ref expired (DB_JOB_EXPIRE_ACTIONS only). */
+    db_expired_action_t expired[DB_MAX_EXPIRED]; /**< Due actions from an expiry sweep. */
 } db_result_t;
 
 /** @brief Job completion callback; runs on the loop thread. */

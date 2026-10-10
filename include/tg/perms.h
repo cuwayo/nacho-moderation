@@ -109,6 +109,33 @@ int perms_check(const perms_subject_t *subject, const cmd_desc_t *cmd, int bot_h
 int perms_target_ok(role_t target, int64_t target_id, int64_t bot_id);
 
 /**
+ * @brief Report whether the bot holds @p right in a chat, given its admin list.
+ *
+ * The bot is looked up by @p bot_id; the creator holds every right. A @c RIGHT_NONE
+ * requirement is always satisfied.
+ *
+ * @param[in] admins Administrator list (may be NULL = unknown).
+ * @param[in] bot_id The bot's own user id.
+ * @param[in] right  Required right.
+ *
+ * @return 1 if the bot holds the right (or none is required), else 0.
+ * @thread_safety Safe (no shared state).
+ */
+int perms_bot_has_right(const perms_admins_t *admins, int64_t bot_id, right_t right);
+
+/**
+ * @brief Return @p user_id's role in a chat from an administrator list.
+ *
+ * @param[in] admins  Administrator list (may be NULL).
+ * @param[in] user_id User to classify.
+ *
+ * @return ROLE_OWNER for the creator, ROLE_ADMIN for another administrator, else
+ *         ROLE_ANYONE.
+ * @thread_safety Safe (no shared state).
+ */
+role_t perms_role_of(const perms_admins_t *admins, int64_t user_id);
+
+/**
  * @brief Create the permission engine.
  *
  * @param[in] cfg Configuration (pointers must outlive the engine).

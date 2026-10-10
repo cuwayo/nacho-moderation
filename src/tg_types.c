@@ -115,6 +115,7 @@ static void parse_message(yyjson_val *v, tg_message_t *out)
     yyjson_val *reply = yyjson_obj_get(v, "reply_to_message");
     if (reply != NULL && yyjson_is_obj(reply)) {
         out->has_reply = 1;
+        out->reply_to_message_id = get_i64(reply, "message_id");
         parse_user(yyjson_obj_get(reply, "from"), &out->reply_from);
     }
 

@@ -24,6 +24,7 @@
 #include "tables_json.h"
 #include "tg/api_pool.h"
 #include "tg/db.h"
+#include "tg/expiry.h"
 #include "tg/loop.h"
 #include "tg/net_conn.h"
 #include "tg/perms.h"
@@ -293,6 +294,7 @@ static int run_services(loop_t *loop, tg_api_t *api, const config_values_t *cfg,
                             .db = db_ops(db),
                             .perms = perms,
                             .clock = &util_clock_ops_real,
+                            .wall = &util_wall_clock_real,
                             .bot_id = me->id,
                             .bot_username = me->username};
     router_t *router = router_create(&rcfg);
@@ -301,6 +303,16 @@ static int run_services(loop_t *loop, tg_api_t *api, const config_values_t *cfg,
         perms_destroy(perms);
         db_destroy(db);
         return 1;
+    }
+
+    /* Lift expired temp bans/mutes every 30 s (SPEC section 5.6). */
+    expiry_config_t ecfg = {.ops = loop_ops(loop),
+                            .db = db_ops(db),
+                            .api = tg_api_ops(api),
+                            .wall = &util_wall_clock_real};
+    expiry_t *expiry = expiry_create(&ecfg);
+    if (expiry == NULL || expiry_start(expiry) != 0) {
+        util_log(LOG_WARN, "main", "expiry sweeper unavailable");
     }
 
     /* Register the command menu with Telegram (best effort). */
@@ -312,6 +324,8 @@ static int run_services(loop_t *loop, tg_api_t *api, const config_values_t *cfg,
 
     run_polling(loop, api, cfg, db, router);
 
+    expiry_stop(expiry);
+    expiry_destroy(expiry);
     router_destroy(router);
     perms_destroy(perms);
     db_destroy(db);

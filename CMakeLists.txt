@@ -75,10 +75,15 @@ add_library(
     src/router.c
     src/tg_api.c
     src/commands.c
+    src/cmd_ctx.c
     src/config.c
     src/tables_json.c
     src/cli.c
-    src/cmd_help.c)
+    src/cmd_help.c
+    src/cmd_util.c
+    src/cmd_mod.c
+    src/cmd_msg.c
+    src/expiry.c)
 target_include_directories(
     libtgbot_core
     PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"

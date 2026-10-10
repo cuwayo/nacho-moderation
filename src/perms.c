@@ -75,6 +75,39 @@ int perms_check(const perms_subject_t *subject, const cmd_desc_t *cmd, int bot_h
     return 0;
 }
 
+int perms_bot_has_right(const perms_admins_t *admins, int64_t bot_id, right_t right)
+{
+    if (right == RIGHT_NONE) {
+        return 1;
+    }
+    if (admins == NULL) {
+        return 0;
+    }
+    for (unsigned i = 0; i < admins->count; ++i) {
+        if (admins->admins[i].user_id != bot_id) {
+            continue;
+        }
+        if (admins->admins[i].role == ROLE_OWNER) {
+            return 1; /* the creator holds every right */
+        }
+        return (admins->admins[i].rights & RIGHT_BIT(right)) != 0u;
+    }
+    return 0; /* the bot is not an administrator at all */
+}
+
+role_t perms_role_of(const perms_admins_t *admins, int64_t user_id)
+{
+    if (admins == NULL) {
+        return ROLE_ANYONE;
+    }
+    for (unsigned i = 0; i < admins->count; ++i) {
+        if (admins->admins[i].user_id == user_id) {
+            return admins->admins[i].role;
+        }
+    }
+    return ROLE_ANYONE;
+}
+
 int perms_target_ok(role_t target, int64_t target_id, int64_t bot_id)
 {
     if (target_id == bot_id) {

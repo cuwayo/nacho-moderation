@@ -5,24 +5,26 @@ I/O runs asynchronously through `liburing` in a single-threaded event loop;
 blocking work (SQLite, DNS) is isolated in worker threads that signal the loop
 through an `eventfd`.
 
-> **Status: M3 — update parsing, router, DB worker, upserts, admin cache, and
-> permissions.** The build system, sanitizer and coverage presets,
-> single-source-of-truth tables, introspection CLI, and documentation skeleton
-> (M0) are in place; the single-threaded io_uring event loop, TCP connect,
-> OpenSSL memory-BIO TLS, incremental HTTP client, worker-thread DNS, and a
-> minimal Bot API client that performs `getMe` (M1) are implemented; M2 adds
-> reusable keep-alive connections, a connection pool, a token-bucket rate limiter
-> with 429 handling and exponential backoff, and a `getUpdates` long-poll loop;
-> and M3 adds update parsing, a command router, a SQLite worker thread with
-> `users`/`chats` upserts, a per-chat administrator cache, and the permission
-> model, so `/help` now replies for real. Later milestones M4–M7 (moderation
-> commands, warns/settings, automod/captcha, webhook) follow in order per
-> `docs/SPEC.md` §12.
+> **Status: M4 — moderation commands.** The build system, sanitizer and coverage
+> presets, single-source-of-truth tables, introspection CLI, and documentation
+> skeleton (M0) are in place; the single-threaded io_uring event loop, TCP connect,
+> OpenSSL memory-BIO TLS, incremental HTTP client, worker-thread DNS, and a minimal
+> Bot API client that performs `getMe` (M1) are implemented; M2 adds reusable
+> keep-alive connections, a connection pool, a token-bucket rate limiter with 429
+> handling and exponential backoff, and a `getUpdates` long-poll loop; M3 adds
+> update parsing, a command router, a SQLite worker thread with `users`/`chats`
+> upserts, a per-chat administrator cache, and the permission model; and M4 adds
+> the moderation commands (`/ban`, `/unban`, `/kick`, `/mute`, `/unmute`, `/del`,
+> `/pin`, `/unpin`, `/purge`), duration parsing, and the expiring-actions sweeper.
+> Later milestones M5–M7 (warns/settings, automod/captcha, webhook) follow in order
+> per `docs/SPEC.md` §12.
 
-## Features (planned)
+## Features
 
-- Moderation commands: ban, mute, warn, purge, locks, and more.
-- Join captcha, antiflood, and blacklist automod.
+- Moderation commands: `/ban`, `/unban`, `/kick`, `/mute`, `/unmute`, `/del`,
+  `/pin`, `/unpin`, `/purge`, with `30s`/`10m`/`2h`/`7d`/`1w` durations.
+- Temporary bans and mutes that survive a restart and lift automatically.
+- Join captcha, antiflood, and blacklist automod (M6).
 - Fully asynchronous network I/O through `io_uring`.
 - Pooled keep-alive Bot API client with outbound rate limiting and retries.
 - `getUpdates` long-polling (webhook mode in M7).
@@ -96,6 +98,15 @@ The command set lives in `src/commands.def`; the table below is generated from i
 | Command | Role | Usage | Description |
 |---|---|---|---|
 | `/help` | ROLE_ANYONE |  | Show available commands |
+| `/ban` | ROLE_ADMIN | `[target] [duration] [reason]` | Ban a user from the chat |
+| `/unban` | ROLE_ADMIN | `[target]` | Lift a ban |
+| `/kick` | ROLE_ADMIN | `[target] [reason]` | Remove a user so they can rejoin |
+| `/mute` | ROLE_ADMIN | `[target] [duration] [reason]` | Restrict a user from sending messages |
+| `/unmute` | ROLE_ADMIN | `[target]` | Restore a user's permissions |
+| `/del` | ROLE_ADMIN |  | Delete the replied-to message and the command |
+| `/pin` | ROLE_ADMIN |  | Pin the replied-to message |
+| `/unpin` | ROLE_ADMIN |  | Unpin the last pinned message |
+| `/purge` | ROLE_ADMIN |  | Delete messages from the replied message to now |
 <!-- END GENERATED: commands-table -->
 
 See [`docs/commands.md`](docs/commands.md) for the full reference.

@@ -93,6 +93,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (the A5.1 matrix), `test_router`, an updated `test_cmd_help`, and the
   `fuzz_update_json` fuzz target; plus the `integration-router` end-to-end test.
 
+### Added (M4)
+
+- M4: member-moderation commands `src/cmd_mod.c` — `/ban`, `/unban`, `/kick`,
+  `/mute`, `/unmute` — with optional `[duration] [reason]`, the target guard
+  (never the owner, another admin, or the bot), and an `actions` row recorded per
+  action (SPEC section 5.2).
+- M4: message-management commands `src/cmd_msg.c` — `/del` (two `deleteMessage`
+  calls), `/pin` (silent), `/unpin`, and `/purge` (`deleteMessages` in batches of
+  100, up to 1000 ids) (SPEC section 5.2).
+- M4: a reference-counted command invocation (`src/cmd_ctx.c`, `include/tg/cmd_ctx.h`)
+  so a handler may start an asynchronous chain (`/kick` = ban → unban; `/purge`
+  fan-out) and the context outlives the handler call, freed by the last callback
+  (SPEC section 9).
+- M4: an injectable wall clock (`wall_clock_ops_t` in `src/util.c`) for absolute
+  `until_date` / `expires_at` timestamps, kept separate from the monotonic clock
+  used for timers (SPEC-ADDENDUM-TOOLCHAIN A3).
+- M4: the expiring-actions sweeper (`src/expiry.c`): a 30 s timer asks the DB
+  worker for due `actions` rows and lifts them (`unbanChatMember` / restored
+  `restrictChatMember` permissions), marking each row lifted; it survives restarts
+  because `expires_at` is wall-clock (SPEC section 5.6).
+- M4: the router now resolves the target from a reply, a numeric id, or an
+  `@username` (via the `users` cache), derives the caller/target/bot roles from a
+  single `getChatAdministrators` fetch, checks the bot's own rights, and maintains a
+  bounded per-chat recent-message ring for `/purge` (`src/router.c`).
+- M4: DB jobs for `actions` insert, the expiry sweep, the lift update, and a
+  username lookup (`src/db.c`, `include/tg/db.h`).
+- M4 API methods: `banChatMember`, `unbanChatMember`, `restrictChatMember`,
+  `deleteMessage`, `deleteMessages`, `pinChatMessage`, `unpinChatMessage` (each
+  with a mock-server handler and a docs row, C9).
+- M4 tests: `test_cmd_util`, `test_cmd_mod`, `test_cmd_msg`, `test_expiry`, and the
+  DB action/expiry/lookup cases in `test_db`; a `fuzz_moderation_args` fuzz target;
+  and the `integration-moderation` end-to-end test with `ban_reply`,
+  `ban_nonadmin`, `ban_username`, and `kick_reply` scenarios.
+
 ### Fixed
 
 - M1/M2 TLS: a request queued before the handshake completed (the API pool queues

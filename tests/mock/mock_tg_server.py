@@ -37,10 +37,25 @@ DEFAULT_ME = {
 
 # Every Bot API method this mock implements. Keep in sync with src/api_methods.def
 # (consistency check C9).
-HANDLERS = ["getMe", "getUpdates", "getChatAdministrators", "sendMessage", "setMyCommands"]
+HANDLERS = [
+    "getMe",
+    "getUpdates",
+    "getChatAdministrators",
+    "sendMessage",
+    "setMyCommands",
+    "banChatMember",
+    "unbanChatMember",
+    "restrictChatMember",
+    "deleteMessage",
+    "deleteMessages",
+    "pinChatMessage",
+    "unpinChatMessage",
+]
 
 # A minimal administrator list returned by getChatAdministrators (the creator is
-# id 100, an admin with restrict rights is id 200).
+# id 100, an admin with restrict rights is id 200, and the bot itself is id
+# 123456789 — a real bot must be an administrator to moderate, so the list
+# includes it with the rights the moderation commands need).
 DEFAULT_ADMINS = [
     {"status": "creator", "user": {"id": 100, "is_bot": False, "first_name": "Owner"}},
     {
@@ -48,6 +63,14 @@ DEFAULT_ADMINS = [
         "user": {"id": 200, "is_bot": False, "first_name": "Admin"},
         "can_restrict_members": True,
         "can_delete_messages": True,
+        "can_pin_messages": True,
+    },
+    {
+        "status": "administrator",
+        "user": {"id": DEFAULT_ME["id"], "is_bot": True, "first_name": "Mock Bot"},
+        "can_restrict_members": True,
+        "can_delete_messages": True,
+        "can_pin_messages": True,
     },
 ]
 
@@ -141,6 +164,14 @@ class Handler(BaseHTTPRequestHandler):
         elif api_method == "sendMessage":
             self._send_json(200, {"ok": True, "result": {"message_id": 1}})
         elif api_method == "setMyCommands":
+            self._send_json(200, {"ok": True, "result": True})
+        elif api_method in ("banChatMember", "unbanChatMember", "restrictChatMember"):
+            self._send_json(200, {"ok": True, "result": True})
+        elif api_method == "deleteMessage":
+            self._send_json(200, {"ok": True, "result": True})
+        elif api_method == "deleteMessages":
+            self._send_json(200, {"ok": True, "result": True})
+        elif api_method in ("pinChatMessage", "unpinChatMessage"):
             self._send_json(200, {"ok": True, "result": True})
         else:
             self._send_json(200, {"ok": False, "description": f"unknown method {api_method}"})

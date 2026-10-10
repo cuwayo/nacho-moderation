@@ -184,6 +184,22 @@ static void test_clock_injection(void **state)
     assert_true(clock_now_ms(&util_clock_ops_real) > 0);
 }
 
+static int64_t fake_wall(void *ctx)
+{
+    return *(int64_t *)ctx;
+}
+
+static void test_wall_clock_injection(void **state)
+{
+    (void)state;
+    int64_t t = 1700000000;
+    wall_clock_ops_t c = {.now_unix = fake_wall, .ctx = &t};
+    assert_int_equal(wall_now_unix(&c), 1700000000);
+    assert_int_equal(wall_now_unix(NULL), 0);
+    /* The real wall clock reports a plausible Unix time (after 2020). */
+    assert_true(wall_now_unix(&util_wall_clock_real) > 1600000000);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -200,6 +216,7 @@ int main(void)
         cmocka_unit_test(test_html_escape_truncation),
         cmocka_unit_test(test_html_escape_boundary),
         cmocka_unit_test(test_clock_injection),
+        cmocka_unit_test(test_wall_clock_injection),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

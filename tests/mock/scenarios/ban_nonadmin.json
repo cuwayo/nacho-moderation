@@ -1,0 +1,32 @@
+{
+  "_comment": "A NON-admin (id 300, not in the admin list) replies /ban to a message. The router resolves the caller via getChatAdministrators, finds them a plain member, and denies the command: no banChatMember is sent, an error reply is sent instead.",
+  "updates": [
+    [
+      {
+        "update_id": 1,
+        "message": {
+          "message_id": 10,
+          "date": 1700000000,
+          "from": {"id": 300, "is_bot": false, "first_name": "Member", "username": "member"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "hi"
+        }
+      },
+      {
+        "update_id": 2,
+        "message": {
+          "message_id": 11,
+          "date": 1700000000,
+          "from": {"id": 300, "is_bot": false, "first_name": "Member", "username": "member"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "/ban 10m",
+          "reply_to_message": {
+            "message_id": 10,
+            "from": {"id": 400, "is_bot": false, "first_name": "Victim", "username": "victim"}
+          }
+        }
+      }
+    ],
+    []
+  ]
+}

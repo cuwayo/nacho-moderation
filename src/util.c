@@ -45,6 +45,30 @@ uint64_t clock_now_ms(const clock_ops_t *c)
     return c->now_ms(c->ctx);
 }
 
+/* --- Wall clock ------------------------------------------------------------ */
+
+/**
+ * @brief Real wall clock: seconds since the Unix epoch.
+ *
+ * @param[in] ctx Unused (NULL).
+ * @return Unix seconds.
+ */
+static int64_t real_now_unix(void *ctx)
+{
+    (void)ctx;
+    return (int64_t)time(NULL);
+}
+
+const wall_clock_ops_t util_wall_clock_real = {.now_unix = real_now_unix, .ctx = NULL};
+
+int64_t wall_now_unix(const wall_clock_ops_t *c)
+{
+    if (c == NULL || c->now_unix == NULL) {
+        return 0;
+    }
+    return c->now_unix(c->ctx);
+}
+
 /* --- Arena ----------------------------------------------------------------- */
 
 /** @brief Arena block alignment (bytes); keeps every allocation suitably aligned. */

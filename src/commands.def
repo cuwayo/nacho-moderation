@@ -18,7 +18,17 @@
  *   brief       1-256 chars, English, shown in /help and setMyCommands
  *   handler     function name: int handler(cmd_ctx_t *ctx)
  *
- * M0 seeds only /help (S10); the remaining SPEC section 5.2 commands land with
- * their handlers in M3-M6.
+ * M0 seeds only /help (S10); M4 adds the moderation commands of SPEC section 5.2
+ * (ban, unban, kick, mute, unmute, del, pin, unpin, purge); the remaining command
+ * groups (warns, settings, locks, ...) land in M5-M6.
  */
 X(HELP, "help", ROLE_ANYONE, RIGHT_NONE, RIGHT_NONE, 0, "", "Show available commands", cmd_help)
+X(BAN, "ban", ROLE_ADMIN, RIGHT_RESTRICT, RIGHT_RESTRICT, CMDF_TARGET|CMDF_DURATION|CMDF_REASON|CMDF_GROUP_ONLY, "[target] [duration] [reason]", "Ban a user from the chat", cmd_ban)
+X(UNBAN, "unban", ROLE_ADMIN, RIGHT_RESTRICT, RIGHT_RESTRICT, CMDF_TARGET|CMDF_GROUP_ONLY, "[target]", "Lift a ban", cmd_unban)
+X(KICK, "kick", ROLE_ADMIN, RIGHT_RESTRICT, RIGHT_RESTRICT, CMDF_TARGET|CMDF_REASON|CMDF_GROUP_ONLY, "[target] [reason]", "Remove a user so they can rejoin", cmd_kick)
+X(MUTE, "mute", ROLE_ADMIN, RIGHT_RESTRICT, RIGHT_RESTRICT, CMDF_TARGET|CMDF_DURATION|CMDF_REASON|CMDF_GROUP_ONLY, "[target] [duration] [reason]", "Restrict a user from sending messages", cmd_mute)
+X(UNMUTE, "unmute", ROLE_ADMIN, RIGHT_RESTRICT, RIGHT_RESTRICT, CMDF_TARGET|CMDF_GROUP_ONLY, "[target]", "Restore a user's permissions", cmd_unmute)
+X(DEL, "del", ROLE_ADMIN, RIGHT_DELETE, RIGHT_DELETE, CMDF_REPLY_REQUIRED|CMDF_GROUP_ONLY, "", "Delete the replied-to message and the command", cmd_del)
+X(PIN, "pin", ROLE_ADMIN, RIGHT_PIN, RIGHT_PIN, CMDF_REPLY_REQUIRED|CMDF_GROUP_ONLY, "", "Pin the replied-to message", cmd_pin)
+X(UNPIN, "unpin", ROLE_ADMIN, RIGHT_PIN, RIGHT_PIN, CMDF_GROUP_ONLY, "", "Unpin the last pinned message", cmd_unpin)
+X(PURGE, "purge", ROLE_ADMIN, RIGHT_DELETE, RIGHT_DELETE, CMDF_REPLY_REQUIRED|CMDF_GROUP_ONLY, "", "Delete messages from the replied message to now", cmd_purge)

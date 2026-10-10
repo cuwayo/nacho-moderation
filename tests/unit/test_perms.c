@@ -320,6 +320,39 @@ static void test_sudo_classification(void **state)
     perms_destroy(p);
 }
 
+static void test_bot_right_and_role_lookup(void **state)
+{
+    (void)state;
+    const int64_t bot_id = 999;
+    perms_admins_t admins = {0};
+    admins.count = 2;
+    admins.admins[0] = (perms_admin_t){.user_id = 100, .role = ROLE_OWNER, .rights = 0xffffffffu};
+    admins.admins[1] =
+        (perms_admin_t){.user_id = 200, .role = ROLE_ADMIN, .rights = RIGHT_BIT(RIGHT_RESTRICT)};
+
+    /* RIGHT_NONE is always satisfied, even with no admin list. */
+    assert_int_equal(perms_bot_has_right(NULL, bot_id, RIGHT_NONE), 1);
+    /* The bot is not in the list: it holds no right. */
+    assert_int_equal(perms_bot_has_right(&admins, bot_id, RIGHT_RESTRICT), 0);
+
+    /* Role lookup against the original list. */
+    assert_int_equal(perms_role_of(&admins, 100), ROLE_OWNER);
+    assert_int_equal(perms_role_of(&admins, 200), ROLE_ADMIN);
+    assert_int_equal(perms_role_of(&admins, 555), ROLE_ANYONE);
+    assert_int_equal(perms_role_of(NULL, 555), ROLE_ANYONE);
+
+    /* The bot as a plain administrator holds only its granted rights. */
+    admins.admins[1].user_id = bot_id;
+    assert_int_equal(perms_bot_has_right(&admins, bot_id, RIGHT_RESTRICT), 1);
+    assert_int_equal(perms_bot_has_right(&admins, bot_id, RIGHT_DELETE), 0);
+
+    /* The bot as the creator holds every right. */
+    admins.admins[0].user_id = bot_id;
+    admins.admins[0].role = ROLE_OWNER;
+    assert_int_equal(perms_bot_has_right(&admins, bot_id, RIGHT_DELETE), 1);
+    assert_int_equal(perms_role_of(&admins, bot_id), ROLE_OWNER);
+}
+
 static void test_bad_args(void **state)
 {
     (void)state;
@@ -412,6 +445,7 @@ int main(void)
         cmocka_unit_test(test_sudo_classification),
         cmocka_unit_test(test_request_failure_does_not_callback),
         cmocka_unit_test(test_malformed_admin_entries_skipped),
+        cmocka_unit_test(test_bot_right_and_role_lookup),
         cmocka_unit_test(test_bad_args),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);

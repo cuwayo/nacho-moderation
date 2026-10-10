@@ -39,6 +39,15 @@ The available commands are listed below.
 | Command | Role | Usage | Description |
 |---|---|---|---|
 | `/help` | ROLE_ANYONE |  | Show available commands |
+| `/ban` | ROLE_ADMIN | `[target] [duration] [reason]` | Ban a user from the chat |
+| `/unban` | ROLE_ADMIN | `[target]` | Lift a ban |
+| `/kick` | ROLE_ADMIN | `[target] [reason]` | Remove a user so they can rejoin |
+| `/mute` | ROLE_ADMIN | `[target] [duration] [reason]` | Restrict a user from sending messages |
+| `/unmute` | ROLE_ADMIN | `[target]` | Restore a user's permissions |
+| `/del` | ROLE_ADMIN |  | Delete the replied-to message and the command |
+| `/pin` | ROLE_ADMIN |  | Pin the replied-to message |
+| `/unpin` | ROLE_ADMIN |  | Unpin the last pinned message |
+| `/purge` | ROLE_ADMIN |  | Delete messages from the replied message to now |
 <!-- END GENERATED: commands-table -->
 
 # SIGNALS

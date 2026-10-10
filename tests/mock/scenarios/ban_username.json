@@ -1,0 +1,30 @@
+{
+  "_comment": "An administrator bans an @username. The target user spoke in the first update, so the router's DB worker has their id; the /ban update resolves @spammer via the users cache (DB lookup) and issues banChatMember for that id.",
+  "updates": [
+    [
+      {
+        "update_id": 1,
+        "message": {
+          "message_id": 10,
+          "date": 1700000000,
+          "from": {"id": 300, "is_bot": false, "first_name": "Spammer", "username": "spammer"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "hello"
+        }
+      }
+    ],
+    [
+      {
+        "update_id": 2,
+        "message": {
+          "message_id": 11,
+          "date": 1700000001,
+          "from": {"id": 200, "is_bot": false, "first_name": "Admin", "username": "admin"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "/ban @spammer 1h"
+        }
+      }
+    ],
+    []
+  ]
+}

@@ -66,6 +66,7 @@ static void test_reply_captures_target(void **state)
     tg_update_t u;
     assert_int_equal(tg_update_parse(json, strlen(json), &u), 0);
     assert_true(u.message.has_reply);
+    assert_int_equal(u.message.reply_to_message_id, 8);
     assert_int_equal(u.message.reply_from.id, 555);
     assert_string_equal(u.message.reply_from.username, "bob");
 }

@@ -13,6 +13,13 @@ the mock server lands), and the mock server must implement every method listed.
 | `getChatAdministrators` | global | yes |
 | `sendMessage` | per-chat | no |
 | `setMyCommands` | global | yes |
+| `banChatMember` | bulk | yes |
+| `unbanChatMember` | bulk | yes |
+| `restrictChatMember` | bulk | yes |
+| `deleteMessage` | bulk | yes |
+| `deleteMessages` | bulk | yes |
+| `pinChatMessage` | bulk | yes |
+| `unpinChatMessage` | bulk | yes |
 
 (Additional methods are added to `src/api_methods.def` as commands are implemented.)
 
