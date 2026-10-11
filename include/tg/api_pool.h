@@ -131,8 +131,10 @@ void api_pool_pump(api_pool_t *pool);
 /**
  * @brief Destroy the pool, its connections and any queued requests.
  *
- * Queued requests are abandoned without invoking their callbacks (shutdown path,
- * SPEC section 9 graceful shutdown is completed in M7).
+ * Queued requests are abandoned without invoking their callbacks. Graceful
+ * shutdown drains outstanding requests first (see @ref api_pool_outstanding and
+ * the drain in `main.c`, SPEC section 9), so this is only reached once the pool
+ * is idle or the drain budget has elapsed.
  *
  * @param[in] pool Pool (may be NULL).
  * @thread_safety Loop thread only.
@@ -148,5 +150,33 @@ void api_pool_destroy(api_pool_t *pool);
  * @thread_safety Loop thread only.
  */
 size_t api_pool_queue_depth(const api_pool_t *pool);
+
+/**
+ * @brief Number of requests still outstanding (queued plus in flight).
+ *
+ * Used by the graceful-shutdown drain (SPEC section 9) to decide when every
+ * outbound call has finished.
+ *
+ * @param[in] pool Pool.
+ *
+ * @return Outstanding request count.
+ * @thread_safety Loop thread only.
+ */
+size_t api_pool_outstanding(const api_pool_t *pool);
+
+/**
+ * @brief Number of outstanding requests of one connection class.
+ *
+ * The graceful-shutdown drain uses this to ignore the dedicated polling
+ * connection: a long-poll is the update source, which shutdown stops rather than
+ * drains (SPEC section 9).
+ *
+ * @param[in] pool Pool.
+ * @param[in] cls  Connection class to count.
+ *
+ * @return Outstanding request count of that class.
+ * @thread_safety Loop thread only.
+ */
+size_t api_pool_outstanding_class(const api_pool_t *pool, pool_class_t cls);
 
 #endif /* TG_API_POOL_H */

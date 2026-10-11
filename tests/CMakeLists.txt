@@ -79,6 +79,14 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(
         integration-m6 PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
                                 ENVIRONMENT "NM_TGBOT_BIN=$<TARGET_FILE:tgbot>")
+
+    # M7: webhook mode and graceful shutdown (A5.3).
+    add_test(
+        NAME integration-webhook
+        COMMAND ${Python3_EXECUTABLE} tests/integration/test_integration_webhook.py)
+    set_tests_properties(
+        integration-webhook PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                                     ENVIRONMENT "NM_TGBOT_BIN=$<TARGET_FILE:tgbot>")
 else()
     message(STATUS "Python3 interpreter not found; docs/SSOT ctest entries disabled")
 endif()

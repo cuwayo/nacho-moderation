@@ -106,8 +106,40 @@ static int real_sock_close(void *ctx, int fd)
     return close(fd) == 0 ? 0 : -errno;
 }
 
-const net_ops_t net_ops_real = {
-    .sock_create = real_sock_create, .sock_close = real_sock_close, .ctx = NULL};
+/**
+ * @brief Bind a socket to an address (webhook listen setup, startup only).
+ *
+ * @param[in] ctx Unused.
+ * @param[in] fd  Socket.
+ * @param[in] addr Address to bind.
+ * @param[in] len  Length of @p addr.
+ * @return 0 on success, negative errno on failure.
+ */
+static int real_sock_bind(void *ctx, int fd, const struct sockaddr *addr, socklen_t len)
+{
+    (void)ctx;
+    return bind(fd, addr, len) == 0 ? 0 : -errno;
+}
+
+/**
+ * @brief Mark a bound socket as listening (webhook listen setup, startup only).
+ *
+ * @param[in] ctx     Unused.
+ * @param[in] fd      Socket.
+ * @param[in] backlog Listen backlog.
+ * @return 0 on success, negative errno on failure.
+ */
+static int real_sock_listen(void *ctx, int fd, int backlog)
+{
+    (void)ctx;
+    return listen(fd, backlog) == 0 ? 0 : -errno;
+}
+
+const net_ops_t net_ops_real = {.sock_create = real_sock_create,
+                                .sock_close = real_sock_close,
+                                .sock_bind = real_sock_bind,
+                                .sock_listen = real_sock_listen,
+                                .ctx = NULL};
 
 /* --- Forward declarations -------------------------------------------------- */
 

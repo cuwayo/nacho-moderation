@@ -214,7 +214,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `automod_antiflood`, `captcha_join`, `captcha_join_part2` and
   `captcha_wrong_user` scenarios.
 
+### Added (M7)
+
+- M7: **webhook mode** (`src/webhook.c`, `include/tg/webhook.h`, SPEC section 4.1)
+  — an inbound plain-HTTP server for use behind a TLS-terminating reverse proxy.
+  The listening socket is bound once at startup; accepts (`io_uring_prep_accept`),
+  receives and sends are all io_uring operations. Each request is parsed by a new
+  incremental request parser (`http_req_t` in `src/http.c`), checked against
+  `webhook.secret` with a constant-time compare (403 on mismatch, 405 on a non-POST
+  method), and routed as one Update. `mode = "webhook"` selects it over the
+  default `polling` at startup (`src/main.c`).
+- M7: **signal handling via `signalfd` read on the ring** (`src/signals.c`,
+  `include/tg/signals.h`, SPEC section 8). `SIGINT`/`SIGTERM`/`SIGUSR1` are blocked
+  and delivered through a signalfd whose read is a ring operation, so an arriving
+  signal produces a CQE and wakes the loop (an async handler only setting a flag
+  does not, because `io_uring_wait_cqe` restarts itself on EINTR).
+- M7: **graceful shutdown** (SPEC section 9) — on a termination signal the bot
+  stops its update source, then drains in-flight Bot API requests and DB jobs
+  bounded by 10 s before flushing and exiting 0. A new bounded loop wait
+  (`loop_run_once_timeout`, `io_uring_wait_cqe_timeout`) keeps a long timer from
+  blocking past the drain budget, and `api_pool_outstanding` /
+  `api_pool_outstanding_class` report what is left.
+- M7: **packaging** — a hardened systemd unit (`packaging/nachomoderator.service`)
+  with the io_uring-aware `SystemCallFilter` from SPEC-ADDENDUM-TOOLCHAIN A8, and a
+  multi-stage `packaging/Dockerfile` with the seccomp caveat documented.
+- M7: **SSOT consistency checks C6–C18** (`scripts/check_consistency.py`): TOML
+  snippets validate, README `title="ci"` snippets parse with known presets,
+  `--help` matches the golden file and `docs/building.md`, man pages list every
+  command and config key, `setMyCommands` constraints hold, Doxygen `@ingroup`/
+  `@file` are present, no bare `TODO`/`FIXME`, `CHANGELOG`/`.def` PR-context checks,
+  metrics and error classes are documented, relative doc links resolve, and
+  forbidden terminology is absent. Each has a passing and a failing fixture in
+  `tests/scripts/test_check_consistency.py`.
+- M7: `new http_req_t` request parser and `http_response_build()` (`src/http.c`),
+  `net_ops_t` `sock_bind`/`sock_listen`, `loop_ops_t` `prep_accept`/`prep_read`/
+  `wait_cqe_timeout`, and a `metrics-table` generated doc block in
+  `docs/architecture.md`.
+- M7 tests: `test_http_request`, `test_webhook` (over the fake ring) and
+  `test_signals`, the `fuzz_http_request` fuzz target, and the
+  `integration-webhook` end-to-end test (valid update routed, wrong secret 403,
+  GET 405, SIGTERM exits 0). CI gains a `docs-smoke` job that runs the README
+  quick-start verbatim.
+
 ### Fixed
+
+- M7 shutdown: a termination signal did not stop the bot. `io_uring_wait_cqe`
+  restarts itself on `EINTR`, so an asynchronous handler that only set a flag never
+  woke the loop, and the process hung until the 30 s long-poll returned. Signals
+  are now delivered through a signalfd read on the ring (`src/signals.c`).
+- M7 shutdown: the graceful drain could block for far longer than its 10 s budget
+  (or forever) because it used the unbounded `loop_run_once`. The drain now uses
+  `loop_run_once_timeout` with a short slice, so a pending sweep timer or a
+  missed eventfd wakeup cannot stall shutdown.
+- M7 webhook: an accepted connection that arrived after `webhook_stop()` was
+  leaked (there is no re-arm to service it); it is now closed. A failed
+  `prep_recv`/`prep_send` (SQ ring momentarily full) likewise released the
+  connection slot instead of leaving it stuck, and the shutdown drain now also
+  waits for in-flight webhook responses (`src/webhook.c`, `src/main.c`).
+- M7 HTTP: the response and inbound-request parsers deferred a malformed-line
+  error to the *next* byte (or forever if no byte followed), because the line
+  handler returned success while the state was already `HR_ERROR`/`HRQ_ERROR`.
+  Both now report `-EPROTO` on the byte that completes the bad line
+  (`src/http.c`); regression tests added.
+- M7 main: a failure in `tg_api_create()` returned without destroying the signal
+  watcher (a leak), now fixed (`src/main.c`).
 
 - M6: `foreach_token`'s unrecognized-token pointer in `/lock`/`/unlock` pointed
   into a stack buffer that did not outlive the visitor, so the "Unknown lock

@@ -157,6 +157,31 @@ int tg_api_build_get_updates_body(char *out, size_t cap, int64_t offset, unsigne
 void tg_api_pump(tg_api_t *api);
 
 /**
+ * @brief Number of Bot API requests still outstanding (queued plus in flight).
+ *
+ * Used by the graceful-shutdown drain (SPEC section 9).
+ *
+ * @param[in] api Client.
+ *
+ * @return Outstanding request count.
+ * @thread_safety Loop thread only.
+ */
+size_t tg_api_outstanding(const tg_api_t *api);
+
+/**
+ * @brief Number of outstanding requests on the dedicated polling connection.
+ *
+ * The shutdown drain waits for shared requests only: a getUpdates long-poll is
+ * the update source, which shutdown stops rather than drains (SPEC section 9).
+ *
+ * @param[in] api Client.
+ *
+ * @return Outstanding polling-class request count (0 or 1).
+ * @thread_safety Loop thread only.
+ */
+size_t tg_api_outstanding_polling(const tg_api_t *api);
+
+/**
  * @brief Destroy the client and its pool.
  *
  * @param[in] api Client (may be NULL).

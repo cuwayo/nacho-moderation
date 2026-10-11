@@ -3,8 +3,8 @@
  * @brief Executable entry point: argument parsing and top-level dispatch.
  *
  * M1 adds the runtime path: load the configuration, then run one getMe through
- * the io_uring event loop (SPEC section 12). Signal handling is a self-eventfd
- * for now; signalfd-via-io_uring is deferred to M7.
+ * the io_uring event loop (SPEC section 12). M7 adds signal handling through a
+ * signalfd read on the ring, webhook mode, and the graceful-shutdown drain.
  *
  * @ingroup util
  */
@@ -33,22 +33,31 @@
 #include "tg/polling.h"
 #include "tg/router.h"
 #include "tg/settings.h"
+#include "tg/signals.h"
 #include "tg/tg_api.h"
 #include "tg/tg_types.h"
 #include "tg/util.h"
 #include "tg/version.h"
+#include "tg/webhook.h"
 
 static volatile sig_atomic_t g_stop;         /**< Set by a termination signal. */
 static volatile sig_atomic_t g_dump_metrics; /**< Set by SIGUSR1 to dump counters. */
 
+/** @brief Graceful-shutdown drain budget in milliseconds (SPEC section 9). */
+#define SHUTDOWN_DRAIN_MS 10000u
+
 /**
- * @brief Signal handler: set the stop flag, or the metrics-dump flag for SIGUSR1.
+ * @brief signalfd callback: record the stop or metrics-dump request.
  *
- * @param[in] sig Signal number.
+ * Runs on the loop thread when the signalfd read completes (SPEC section 8).
+ *
+ * @param[in] signo Signal number.
+ * @param[in] ctx   Unused.
  */
-static void on_signal(int sig)
+static void on_signal(int signo, void *ctx)
 {
-    if (sig == SIGUSR1) {
+    (void)ctx;
+    if (signo == SIGUSR1) {
         g_dump_metrics = 1;
         return;
     }
@@ -176,6 +185,52 @@ static void on_batch(const poll_batch_t *batch, void *ctx)
 }
 
 /**
+ * @brief Drain in-flight API requests and DB jobs, bounded by the shutdown budget.
+ *
+ * Runs the loop for up to @ref SHUTDOWN_DRAIN_MS, pumping the API client and DB
+ * worker until both are idle (SPEC section 9). The dedicated polling connection
+ * is excluded: a getUpdates long-poll is the update source, which shutdown stops
+ * rather than drains. In-flight webhook connections are drained too, so a
+ * response that is mid-send is delivered rather than reset. A hard cap keeps
+ * shutdown bounded when a peer is unresponsive.
+ *
+ * @param[in] loop    Loop to run.
+ * @param[in] api     API client to drain.
+ * @param[in] db      DB worker to drain.
+ * @param[in] webhook Webhook server whose connections to drain (may be NULL).
+ */
+static void drain_in_flight(loop_t *loop, tg_api_t *api, db_t *db, const webhook_t *webhook)
+{
+    /* "Outstanding" for shutdown excludes the long-poll, which may be mid-flight
+     * for up to polling.timeout seconds. */
+    size_t shared = tg_api_outstanding(api) - tg_api_outstanding_polling(api);
+    uint64_t deadline = clock_now_ms(&util_clock_ops_real) + SHUTDOWN_DRAIN_MS;
+    while ((shared > 0 || db_pending(db) > 0 || webhook_active_conns(webhook) > 0) &&
+           clock_now_ms(&util_clock_ops_real) < deadline) {
+        tg_api_pump(api);
+        db_pump(db);
+        /* Wait with a short bound so a missed eventfd wakeup still lets db_pump
+         * run, and a long timer cannot block past the drain budget. */
+        uint64_t now = clock_now_ms(&util_clock_ops_real);
+        uint64_t slice = now < deadline ? deadline - now : 0;
+        if (slice > 100u) {
+            slice = 100u;
+        }
+        if (loop_run_once_timeout(loop, slice) < 0) {
+            break;
+        }
+        shared = tg_api_outstanding(api) - tg_api_outstanding_polling(api);
+    }
+    size_t db_left = db_pending(db);
+    if (shared > 0 || db_left > 0) {
+        util_log(LOG_WARN, "main", "shutdown drain timed out: %zu API request(s), %zu DB job(s)",
+                 shared, db_left);
+    } else {
+        util_log(LOG_INFO, "main", "shutdown drain complete");
+    }
+}
+
+/**
  * @brief Poll getUpdates until a signal arrives, routing updates (SPEC section 4.1).
  *
  * @param[in] loop   Loop to run.
@@ -219,11 +274,90 @@ static void run_polling(loop_t *loop, tg_api_t *api, const config_values_t *cfg,
             break;
         }
     }
-    /* Shutdown: stop issuing polls, then drop in-flight requests. Full drain of
-     * in-flight requests and DB jobs is completed in M7. */
+    /* Stop issuing polls, then drain shared requests and DB jobs. The poller is
+     * kept alive across the drain so a late long-poll completion (whose ctx is
+     * the poller) is not a use-after-free; it is destroyed afterwards. */
     poller_stop(poller);
+    drain_in_flight(loop, api, db, NULL);
     poller_destroy(poller);
-    util_log(LOG_INFO, "main", "stopping");
+}
+
+/**
+ * @brief Webhook update callback: parse one Update and route it (SPEC section 4.1).
+ *
+ * The body is the raw request body of one webhook POST. It is a single Update
+ * object, not a batch, so it is parsed with @ref tg_update_parse and handed to the
+ * router.
+ *
+ * @param[in] body Raw request body.
+ * @param[in] len  Length of @p body.
+ * @param[in] ctx  The @ref router_t.
+ */
+static void on_webhook_update(const char *body, size_t len, void *ctx)
+{
+    if (body == NULL || len == 0) {
+        return;
+    }
+    tg_update_t upd;
+    if (tg_update_parse(body, len, &upd) == 0) {
+        router_t *router = ctx;
+        (void)router_handle(router, &upd);
+    } else {
+        util_log(LOG_WARN, "main", "failed to parse webhook update");
+    }
+}
+
+/**
+ * @brief Serve inbound webhook updates until a signal arrives (SPEC section 4.1).
+ *
+ * @param[in] loop   Loop to run.
+ * @param[in] api    API client to pump.
+ * @param[in] cfg    Loaded configuration values.
+ * @param[in] db     DB worker to pump.
+ * @param[in] router Router that consumes updates.
+ */
+static void run_webhook(loop_t *loop, tg_api_t *api, const config_values_t *cfg, db_t *db,
+                        router_t *router)
+{
+    webhook_config_t wcfg = {
+        .ops = loop_ops(loop),
+        .net = &net_ops_real,
+        .listen_addr = config_get_str(cfg, CFG_WEBHOOK_LISTEN),
+        .secret = config_get_str(cfg, CFG_WEBHOOK_SECRET),
+        .max_body = 0,
+        .max_conns = 0,
+        .on_update = on_webhook_update,
+        .ctx = router,
+    };
+    webhook_t *webhook = webhook_create(&wcfg);
+    if (webhook == NULL || webhook_start(webhook) != 0) {
+        util_log(LOG_ERROR, "main", "failed to start the webhook server on %s",
+                 config_get_str(cfg, CFG_WEBHOOK_LISTEN));
+        webhook_destroy(webhook);
+        return;
+    }
+    util_log(LOG_INFO, "main", "listening for webhook updates on %s",
+             config_get_str(cfg, CFG_WEBHOOK_LISTEN));
+
+    while (!g_stop) {
+        if (g_dump_metrics) {
+            g_dump_metrics = 0;
+            metrics_dump(stderr);
+        }
+        tg_api_pump(api);
+        db_pump(db);
+        int rc = loop_run_once(loop);
+        if (rc < 0) {
+            util_log(LOG_ERROR, "main", "loop error: %d", rc);
+            break;
+        }
+    }
+    /* Stop accepting, drain in-flight API requests, DB jobs and connection
+     * responses, then release the server. The webhook server is kept alive
+     * across the drain so its connection completions are not a use-after-free. */
+    webhook_stop(webhook);
+    drain_in_flight(loop, api, db, webhook);
+    webhook_destroy(webhook);
 }
 
 /**
@@ -371,7 +505,14 @@ static int run_services(loop_t *loop, tg_api_t *api, const config_values_t *cfg,
         (void)tg_api_request(api, METHOD_SET_MY_COMMANDS, smc, smc_len, 0, 0, on_ignore_api, NULL);
     }
 
-    run_polling(loop, api, cfg, db, router);
+    const char *mode = config_get_str(cfg, CFG_MODE);
+    if (strcmp(mode, "webhook") == 0) {
+        run_webhook(loop, api, cfg, db, router);
+    } else {
+        run_polling(loop, api, cfg, db, router);
+    }
+    /* Each mode function drains in-flight requests and DB jobs (SPEC section 9)
+     * before releasing its update source, so nothing is left to drain here. */
 
     captcha_stop(captcha);
     captcha_destroy(captcha);
@@ -382,6 +523,7 @@ static int run_services(loop_t *loop, tg_api_t *api, const config_values_t *cfg,
     settings_destroy(settings);
     perms_destroy(perms);
     db_destroy(db);
+    util_log(LOG_INFO, "main", "stopped");
     return 0;
 }
 
@@ -413,16 +555,21 @@ static int run_bot(const cli_options_t *opts)
      * read on the event loop; SPEC-ADDENDUM-TOOLCHAIN A3). */
     util_random_seed();
 
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = on_signal;
-    (void)sigaction(SIGINT, &sa, NULL);
-    (void)sigaction(SIGTERM, &sa, NULL);
-    (void)sigaction(SIGUSR1, &sa, NULL);
-
     loop_t *loop = loop_create(256);
     if (loop == NULL) {
         (void)fprintf(stderr, "tgbot: failed to initialize io_uring\n");
+        return 1;
+    }
+
+    /* Signal handling via signalfd read through the ring (SPEC section 8): a
+     * SIGINT/SIGTERM produces a CQE and wakes the loop, unlike an async handler
+     * that only sets a flag (io_uring_wait_cqe restarts itself on EINTR). */
+    signals_config_t sigcfg = {.ops = loop_ops(loop), .on_signal = on_signal, .ctx = NULL};
+    signals_t *signals = signals_create(&sigcfg);
+    if (signals == NULL || signals_start(signals) != 0) {
+        (void)fprintf(stderr, "tgbot: failed to install signal handling\n");
+        signals_destroy(signals);
+        loop_destroy(loop);
         return 1;
     }
 
@@ -435,6 +582,7 @@ static int run_bot(const cli_options_t *opts)
     };
     tg_api_t *api = tg_api_create(&acfg, loop_ops(loop), &net_ops_real, &util_clock_ops_real);
     if (api == NULL) {
+        signals_destroy(signals);
         loop_destroy(loop);
         (void)fprintf(stderr, "tgbot: invalid api configuration\n");
         return 2;
@@ -449,11 +597,13 @@ static int run_bot(const cli_options_t *opts)
             util_log(LOG_ERROR, "main", "getMe probe failed");
         }
         tg_api_destroy(api);
+        signals_destroy(signals);
         loop_destroy(loop);
         return 1;
     }
 
     int exit_code = run_services(loop, api, &cfg, &me);
+    signals_destroy(signals);
     tg_api_destroy(api);
     loop_destroy(loop);
     return exit_code;

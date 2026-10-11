@@ -75,8 +75,8 @@ Thresholds: ≥ 80 % line coverage overall, ≥ 90 % for `http`, `tg_api`
 ## Consistency checks (SSOT)
 
 `scripts/check_consistency.py` verifies that documentation and generated artifacts
-match the tables exported by the binary. Checks C1–C5 and C9 are implemented now;
-the rest are added as their features land (SPEC-ADDENDUM-SSOT S10).
+match the tables exported by the binary. All checks C1–C18 are implemented (SPEC
+ADDENDUM-SSOT S7).
 
 | ID | Check | Status |
 |---|---|---|
@@ -85,20 +85,35 @@ the rest are added as their features land (SPEC-ADDENDUM-SSOT S10).
 | C3 | each non-hidden command has a `docs/commands/<name>.md` snippet | implemented |
 | C4 | `docs/configuration.md` documents every config key | implemented |
 | C5 | `config/config.example.toml` matches `--dump-config-example` | implemented |
+| C6 | every TOML fenced block in docs passes `--check-config` | implemented |
+| C7 | README `title="ci"` shell snippets parse and use known presets | implemented |
+| C8 | `--help` matches `tests/golden/help.txt` and `docs/building.md` | implemented |
 | C9 | every `api_methods.def` method has a mock handler and a docs row | implemented |
-| C6–C8, C10–C18 | see SPEC-ADDENDUM-SSOT S7 | pending their features |
+| C10 | commands appear in `tgbot.1.scd`; config keys in `tgbot.toml.5.scd` | implemented |
+| C11 | `setMyCommands` payload constraints (names, briefs, scope subset) | implemented |
+| C12 | every `@ingroup` is defined in `groups.dox`; every src file has `@file` | implemented |
+| C13 | no `TODO`/`FIXME` without an issue reference | implemented |
+| C14 | `CHANGELOG.md` `Unreleased` changed when `src/` changed (PR context) | implemented |
+| C15 | `commands.def`/`config.def` changes come with tests and docs | implemented |
+| C16 | metrics in `metrics.def` and errors in `errors.def` are documented | implemented |
+| C17 | relative links and anchors inside `docs/` and README resolve | implemented |
+| C18 | forbidden terminology from `docs/terminology.txt` is absent | implemented |
 
 ```sh
 scripts/check_consistency.py --bin build/debug/tgbot
 scripts/check_consistency.py --list
 scripts/check_consistency.py --only C3,C4
 scripts/check_consistency.py --format github   # CI annotations
+scripts/check_consistency.py --bin build/debug/tgbot --base origin/main  # C14/C15
 ```
 
 The script exits 0 when all selected checks pass, 1 when a check fails, and 2 on a
 tool error (missing binary, invalid JSON), so CI can distinguish "inconsistent"
-from "broken". It is registered as the CTest test `consistency` and has its own
-tests in `tests/scripts/test_check_consistency.py`.
+from "broken". C14 and C15 are PR-context checks: without `--base <ref>` they pass
+vacuously (the local/CTest run), and CI passes `--base origin/main`. It is
+registered as the CTest test `consistency` and has its own tests in
+`tests/scripts/test_check_consistency.py` (a passing and a failing fixture per
+check).
 
 ## No blocking syscalls on the main thread
 

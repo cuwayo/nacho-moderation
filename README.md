@@ -5,22 +5,24 @@ I/O runs asynchronously through `liburing` in a single-threaded event loop;
 blocking work (SQLite, DNS) is isolated in worker threads that signal the loop
 through an `eventfd`.
 
-> **Status: M5 — warns, settings, welcome/rules, moderation log.** The build
-> system, sanitizer and coverage presets, single-source-of-truth tables,
-> introspection CLI, and documentation skeleton (M0) are in place; the
-> single-threaded io_uring event loop, TCP connect, OpenSSL memory-BIO TLS,
-> incremental HTTP client, worker-thread DNS, and a minimal Bot API client that
-> performs `getMe` (M1) are implemented; M2 adds reusable keep-alive connections, a
-> connection pool, a token-bucket rate limiter with 429 handling and exponential
-> backoff, and a `getUpdates` long-poll loop; M3 adds update parsing, a command
-> router, a SQLite worker thread with `users`/`chats` upserts, a per-chat
-> administrator cache, and the permission model; M4 adds the moderation commands
-> (`/ban`, `/unban`, `/kick`, `/mute`, `/unmute`, `/del`, `/pin`, `/unpin`,
-> `/purge`), duration parsing, and the expiring-actions sweeper; and M5 adds
-> warnings (`/warn`, `/unwarn`, `/warns`, `/resetwarns`), per-chat settings and the
-> `/settings` panel, welcome/rules (`/setwelcome`, `/welcome`, `/setrules`,
-> `/rules`) with join-time delivery, and the moderation log. Later milestones M6–M7
-> (automod/captcha, webhook) follow in order per `docs/SPEC.md` §12.
+> **Status: M7 — webhook mode, graceful shutdown, packaging, and the full SSOT
+> check suite.** The build system, sanitizer and coverage presets,
+> single-source-of-truth tables, introspection CLI, and documentation skeleton
+> (M0) are in place; the single-threaded io_uring event loop, TCP connect,
+> OpenSSL memory-BIO TLS, incremental HTTP client, worker-thread DNS, and a
+> minimal Bot API client that performs `getMe` (M1) are implemented; M2 adds
+> reusable keep-alive connections, a connection pool, a token-bucket rate limiter
+> with 429 handling and exponential backoff, and a `getUpdates` long-poll loop;
+> M3 adds update parsing, a command router, a SQLite worker thread with
+> `users`/`chats` upserts, a per-chat administrator cache, and the permission
+> model; M4 adds the moderation commands (`/ban`, `/unban`, `/kick`, `/mute`,
+> `/unmute`, `/del`, `/pin`, `/unpin`, `/purge`), duration parsing, and the
+> expiring-actions sweeper; M5 adds warnings, per-chat settings and the
+> `/settings` panel, welcome/rules with join-time delivery, and the moderation
+> log; M6 adds automod (locks, blacklist, antiflood) and the join captcha; and M7
+> adds webhook mode, `signalfd`-via-io_uring signal handling, a bounded
+> graceful-shutdown drain, the packaged systemd unit and Dockerfile, and the
+> complete SSOT consistency checks C1–C18.
 
 ## Features
 
@@ -34,12 +36,14 @@ through an `eventfd`.
   a join welcome rendered from `{first}`/`{mention}`/`{chat}`/`{count}`.
 - A moderation log that mirrors every action to a configured channel.
 - Temporary bans and mutes that survive a restart and lift automatically.
-- Join captcha, antiflood, and blacklist automod (M6).
+- Join captcha, antiflood, and blacklist automod.
 - Fully asynchronous network I/O through `io_uring`.
 - Pooled keep-alive Bot API client with outbound rate limiting and retries.
-- `getUpdates` long-polling (webhook mode in M7).
+- `getUpdates` long-polling **or** webhook mode behind a TLS-terminating proxy.
+- Graceful shutdown: signals via `signalfd` on the ring, a bounded drain of
+  in-flight requests and DB jobs, then a clean exit.
 - SQLite persistence on a dedicated worker thread, with an eventfd handoff.
-- Single source of truth for commands and config keys, checked in CI.
+- Single source of truth for commands and config keys, checked in CI (C1–C18).
 
 ## Binding specifications
 
@@ -77,7 +81,7 @@ git submodule update --init --recursive
 
 ## Quick start
 
-```sh
+```sh title="ci"
 cmake --preset debug
 cmake --build --preset debug
 ctest --preset debug --output-on-failure
@@ -99,6 +103,29 @@ build/debug/tgbot --check-config config/config.example.toml
 Copy [`config/config.example.toml`](config/config.example.toml) to `config.toml`
 and fill in `bot_token`. The sample is **generated** from `src/config.def`; the
 full key reference is in [`docs/configuration.md`](docs/configuration.md).
+
+```toml
+# Minimal polling configuration.
+bot_token = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+mode = "polling"
+
+[api]
+pool_size = 4
+base = "https://api.telegram.org"
+request_timeout_ms = 15000
+
+[polling]
+timeout = 30
+```
+
+To receive updates through a webhook instead, put the bot behind a
+TLS-terminating reverse proxy and set:
+
+```toml
+mode = "webhook"
+webhook.listen = "127.0.0.1:8080"
+webhook.secret = "a-long-random-token"
+```
 
 ## Commands
 
@@ -160,7 +187,7 @@ Build directories are `build/<preset>/` (out-of-tree only).
 
 ```sh
 cmake --preset fuzz && cmake --build --preset fuzz
-./build/fuzz/tests/fuzz/fuzz_smoke -runs=1000
+./build/fuzz/tests/fuzz/fuzz_http_response -max_total_time=60
 ```
 
 ## Coverage
@@ -189,8 +216,8 @@ scripts/check_consistency.py --bin build/debug/tgbot # SSOT checks C1-C5
 
 ## Deployment
 
-A hardened systemd unit and Dockerfile are added in M7. See
-[`docs/deployment.md`](docs/deployment.md) for notes on io_uring and seccomp.
+A hardened systemd unit and a Dockerfile live in [`packaging/`](packaging/). See
+[`docs/deployment.md`](docs/deployment.md) for the io_uring and seccomp notes.
 
 ## Repository layout
 
@@ -206,6 +233,7 @@ tests/golden/     golden files (e.g. --help output)
 docs/             prose docs, Doxygen config, ADRs, man pages
 config/           generated sample configuration
 cmake/            Warnings/Sanitizers/Hardening/FindLiburing modules
+packaging/        systemd unit and Dockerfile
 third_party/      vendored cmocka + yyjson (pinned submodules)
 scripts/          format/tidy/cppcheck/coverage/docgen/check_consistency
 ```

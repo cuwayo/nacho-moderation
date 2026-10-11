@@ -297,8 +297,10 @@ void db_pump(db_t *db);
 /**
  * @brief Stop the worker, join it, and release every resource.
  *
- * Any jobs still queued are abandoned without invoking their callbacks (shutdown
- * path; graceful drain is completed in M7).
+ * Any jobs still queued are abandoned without invoking their callbacks. Graceful
+ * shutdown drains outstanding jobs first (see @ref db_pending and the drain in
+ * `main.c`, SPEC section 9), so this is only reached once the worker is idle or
+ * the drain budget has elapsed.
  *
  * @param[in] db DB worker (may be NULL).
  * @thread_safety Loop thread only.

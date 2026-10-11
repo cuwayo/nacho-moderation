@@ -31,6 +31,29 @@ struct loop {
 /* --- Real ring operations -------------------------------------------------- */
 
 /**
+ * @brief Prepare an OP_ACCEPT SQE (webhook mode, SPEC section 4.1).
+ *
+ * @param[in] ctx        Loop.
+ * @param[in] op         Op context.
+ * @param[in] listen_fd  Listening socket.
+ * @param[in] addr       Buffer for the peer address (may be NULL).
+ * @param[in] addrlen    In/out length of @p addr.
+ * @return 0 on success, -EAGAIN if no SQE is free.
+ */
+static int real_prep_accept(void *ctx, op_t *op, int listen_fd, struct sockaddr *addr,
+                            socklen_t *addrlen)
+{
+    loop_t *l = ctx;
+    struct io_uring_sqe *sqe = io_uring_get_sqe(&l->ring);
+    if (sqe == NULL) {
+        return -EAGAIN;
+    }
+    io_uring_prep_accept(sqe, listen_fd, addr, addrlen, 0);
+    io_uring_sqe_set_data(sqe, op);
+    return 0;
+}
+
+/**
  * @brief Prepare an OP_CONNECT SQE, chaining the linked deadline when flagged.
  *
  * @param[in] ctx Loop.
@@ -183,6 +206,33 @@ static int real_prep_read_eventfd(void *ctx, op_t *op, int efd)
 }
 
 /**
+ * @brief Prepare a read into a caller-owned buffer (signalfd and similar).
+ *
+ * @param[in] ctx Loop.
+ * @param[in] op  Op context.
+ * @param[in] fd  Descriptor to read.
+ * @param[in] buf Destination buffer (must outlive the op).
+ * @param[in] len Capacity of @p buf.
+ * @return 0 on success, -EAGAIN if no SQE is free.
+ */
+static int real_prep_read(void *ctx, op_t *op, int fd, void *buf, size_t len)
+{
+    loop_t *l = ctx;
+    struct io_uring_sqe *sqe = io_uring_get_sqe(&l->ring);
+    if (sqe == NULL) {
+        return -EAGAIN;
+    }
+    /* io_uring_prep_read takes a 32-bit length; the signalfd read is small, but
+     * reject anything that would truncate rather than silently shortening it. */
+    if (len > UINT32_MAX) {
+        return -EINVAL;
+    }
+    io_uring_prep_read(sqe, fd, buf, (unsigned)len, 0);
+    io_uring_sqe_set_data(sqe, op);
+    return 0;
+}
+
+/**
  * @brief Prepare an OP_CLOSE SQE.
  *
  * @param[in] ctx Loop.
@@ -241,6 +291,32 @@ static int real_wait_cqe(void *ctx, op_t **op, int *res)
     return 0;
 }
 
+/**
+ * @brief Block for one CQE, but at most @p timeout_ms (0 polls without waiting).
+ *
+ * @param[in]  ctx        Loop.
+ * @param[out] op         Receives the op pointer from the CQE's user_data.
+ * @param[out] res        Receives the completion result.
+ * @param[in]  timeout_ms Maximum wait in milliseconds.
+ * @return 0 on success, -ETIME if the deadline passed with no completion,
+ *         negative errno on failure.
+ */
+static int real_wait_cqe_timeout(void *ctx, op_t **op, int *res, uint64_t timeout_ms)
+{
+    loop_t *l = ctx;
+    struct __kernel_timespec ts = {(int64_t)(timeout_ms / 1000u),
+                                   (int64_t)((timeout_ms % 1000u) * 1000000u)};
+    struct io_uring_cqe *cqe = NULL;
+    int rc = io_uring_wait_cqe_timeout(&l->ring, &cqe, &ts);
+    if (rc < 0) {
+        return rc; /* -ETIME when the deadline passed; -EINTR on a signal */
+    }
+    *op = io_uring_cqe_get_data(cqe);
+    *res = cqe->res;
+    io_uring_cqe_seen(&l->ring, cqe);
+    return 0;
+}
+
 /* --- Public API ------------------------------------------------------------ */
 
 loop_t *loop_create(unsigned entries)
@@ -264,15 +340,18 @@ loop_t *loop_create(unsigned entries)
     }
 
     l->ops = (loop_ops_t){
+        .prep_accept = real_prep_accept,
         .prep_connect = real_prep_connect,
         .prep_recv = real_prep_recv,
         .prep_send = real_prep_send,
         .prep_timeout = real_prep_timeout,
         .prep_link_timeout = real_prep_link_timeout,
         .prep_read_eventfd = real_prep_read_eventfd,
+        .prep_read = real_prep_read,
         .prep_close = real_prep_close,
         .submit = real_submit,
         .wait_cqe = real_wait_cqe,
+        .wait_cqe_timeout = real_wait_cqe_timeout,
         .ctx = l,
     };
     l->ready = 1;
@@ -284,7 +363,15 @@ const loop_ops_t *loop_ops(loop_t *l)
     return l == NULL ? NULL : &l->ops;
 }
 
-int loop_run_once(loop_t *l)
+/**
+ * @brief Shared body of loop_run_once / loop_run_once_timeout.
+ *
+ * @param[in] l          Loop.
+ * @param[in] bounded    1 to wait at most @p timeout_ms, 0 to wait indefinitely.
+ * @param[in] timeout_ms Deadline when @p bounded.
+ * @return 0 on success (including -EINTR and -ETIME), negative errno on a ring error.
+ */
+static int loop_iterate(loop_t *l, int bounded, uint64_t timeout_ms)
 {
     if (l == NULL || !l->ready) {
         return -EINVAL;
@@ -297,9 +384,13 @@ int loop_run_once(loop_t *l)
 
     op_t *op = NULL;
     int res = 0;
-    rc = l->ops.wait_cqe(l, &op, &res);
-    if (rc == -EINTR) {
-        return 0; /* interrupted by a signal; caller re-checks its stop flag */
+    if (bounded && l->ops.wait_cqe_timeout != NULL) {
+        rc = l->ops.wait_cqe_timeout(l, &op, &res, timeout_ms);
+    } else {
+        rc = l->ops.wait_cqe(l, &op, &res);
+    }
+    if (rc == -EINTR || rc == -ETIME) {
+        return 0; /* signal or drain deadline; caller re-checks its stop flag */
     }
     if (rc < 0) {
         return rc;
@@ -308,6 +399,16 @@ int loop_run_once(loop_t *l)
         op->on_complete(op, res);
     }
     return 0;
+}
+
+int loop_run_once(loop_t *l)
+{
+    return loop_iterate(l, 0, 0);
+}
+
+int loop_run_once_timeout(loop_t *l, uint64_t timeout_ms)
+{
+    return loop_iterate(l, 1, timeout_ms);
 }
 
 void loop_destroy(loop_t *l)

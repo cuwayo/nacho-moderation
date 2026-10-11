@@ -1,0 +1,50 @@
+[Unit]
+Description=nacho-moderator Telegram admin bot
+Documentation=man:tgbot(1) man:tgbot.toml(5)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tgbot --config /etc/nachomoderator/config.toml
+Restart=on-failure
+RestartSec=5s
+
+# Run as an unprivileged, dedicated user (create with:
+#   sudo useradd --system --home /var/lib/nachomoderator nachomoderator)
+User=nachomoderator
+Group=nachomoderator
+
+# --- Hardening (SPEC-ADDENDUM-TOOLCHAIN A8) --------------------------------
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+UMask=0077
+
+# The bot writes only its SQLite database under /var/lib/nachomoderator.
+ReadWritePaths=/var/lib/nachomoderator
+StateDirectory=nachomoderator
+StateDirectoryMode=0700
+
+# Allow the io_uring syscalls the event loop needs, on top of the @system-service
+# set (SPEC-ADDENDUM-TOOLCHAIN A8). io_uring_register is used for buffer rings.
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+# The token is read from a 0600 file; never log it.
+Environment=RUST_BACKTRACE=0
+
+[Install]
+WantedBy=multi-user.target

@@ -98,6 +98,19 @@ static void test_find_and_fill(void **state)
     assert_int_equal(sink.last_res, 5);
 }
 
+static void test_fake_ring_wait_timeout(void **state)
+{
+    (void)state;
+    fake_ring_t fr;
+    const loop_ops_t *ops = fake_ring_init(&fr);
+    /* The fake ring exposes the bounded wait; with nothing in flight it reports
+     * -EAGAIN (the test drives completions explicitly). */
+    assert_non_null(ops->wait_cqe_timeout);
+    op_t *op = NULL;
+    int res = 0;
+    assert_int_equal(ops->wait_cqe_timeout(ops->ctx, &op, &res, 5), -EAGAIN);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -105,6 +118,7 @@ int main(void)
         cmocka_unit_test(test_batching_counts_submits),
         cmocka_unit_test(test_error_results_propagate),
         cmocka_unit_test(test_find_and_fill),
+        cmocka_unit_test(test_fake_ring_wait_timeout),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

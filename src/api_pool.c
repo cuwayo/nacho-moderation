@@ -610,6 +610,39 @@ size_t api_pool_queue_depth(const api_pool_t *pool)
     return pool == NULL ? 0 : pool->queue_len;
 }
 
+size_t api_pool_outstanding(const api_pool_t *pool)
+{
+    if (pool == NULL) {
+        return 0;
+    }
+    size_t in_flight = 0;
+    for (unsigned i = 0; i < pool->cfg.pool_size; ++i) {
+        if (pool->slots[i].req != NULL) {
+            in_flight++;
+        }
+    }
+    return pool->queue_len + in_flight;
+}
+
+size_t api_pool_outstanding_class(const api_pool_t *pool, pool_class_t cls)
+{
+    if (pool == NULL) {
+        return 0;
+    }
+    size_t n = 0;
+    for (const api_request_t *r = pool->head; r != NULL; r = r->next) {
+        if (r->cls == cls) {
+            n++;
+        }
+    }
+    for (unsigned i = 0; i < pool->cfg.pool_size; ++i) {
+        if (pool->slots[i].req != NULL && pool->slots[i].cls == cls) {
+            n++;
+        }
+    }
+    return n;
+}
+
 void api_pool_destroy(api_pool_t *pool)
 {
     if (pool == NULL) {

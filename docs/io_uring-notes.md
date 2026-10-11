@@ -98,3 +98,44 @@ the re-arm is still observed (the eventfd counter accumulates). The loop thread
 never touches SQLite: it only enqueues `db_job_t` values under a mutex and drains
 the response queue in `db_pump()`. This is the same worker-thread pattern the DNS
 resolver uses, and it is the only new io_uring consumer in M3.
+
+## M7 signalfd delivery (SPEC section 8)
+
+```
+setup: sigprocmask(SIG_BLOCK) + signalfd() --signals_create--> fd
+loop:  signals_start --prep_read(signalfd)--> armed
+signal: SIGINT/SIGTERM/SIGUSR1 --kernel writes fd--> read CQE (on_signal_read)
+       --callback sets the stop flag--> signals re-arms the read
+```
+
+A signal must wake `io_uring_wait_cqe`, which restarts itself on `EINTR`; an
+asynchronous handler that only sets a flag never does. The signalfd read is
+deliberately **not** `SFD_NONBLOCK`: the io_uring read must block in the kernel
+until a signal arrives, otherwise it completes immediately with `-EAGAIN` and
+busy-loops the event loop.
+
+## M7 webhook accept/read/write
+
+```
+setup: bind + listen (startup, blocking-ok) --webhook_start--> prep_accept --> armed
+peer:  connection --> OP_ACCEPT CQE (on_accept) --slot--> prep_recv --> WH_READ
+data:  OP_RECV CQE --http_req_feed--> complete? verify secret -> route -> respond
+done:  OP_SEND CQE (all bytes) --Connection: close--> slot released, accept re-armed
+```
+
+One accept is outstanding at all times while running. A request with the wrong
+`X-Telegram-Bot-Api-Secret-Token` is answered 403 and a non-POST request 405,
+without reaching the router.
+
+## M7 graceful-shutdown drain (SPEC section 9)
+
+```
+SIGTERM --signalfd CQE--> g_stop --update source stops--> drain_in_flight
+  loop: loop_run_once_timeout (bounded) --api_pump + db_pump--> until
+        shared requests == 0 and DB jobs == 0, or the 10 s budget elapses
+```
+
+`loop_run_once_timeout` wraps `io_uring_wait_cqe_timeout`; the plain
+`loop_run_once` waits indefinitely, so a pending sweep timer could otherwise block
+the drain past its budget. The dedicated polling connection is excluded from the
+drain (a long-poll is the update source, which shutdown stops rather than drains).

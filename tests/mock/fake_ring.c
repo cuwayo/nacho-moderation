@@ -27,6 +27,14 @@ static int fr_record(fake_ring_t *fr, op_t *op, int fd, const void *buf, size_t 
     return 0;
 }
 
+static int fr_prep_accept(void *ctx, op_t *op, int listen_fd, struct sockaddr *addr,
+                          socklen_t *addrlen)
+{
+    (void)addr;
+    (void)addrlen;
+    return fr_record(ctx, op, listen_fd, NULL, 0);
+}
+
 static int fr_prep_connect(void *ctx, op_t *op, int fd, const struct sockaddr *sa, socklen_t len)
 {
     (void)sa;
@@ -61,6 +69,11 @@ static int fr_prep_read_eventfd(void *ctx, op_t *op, int efd)
     return fr_record(ctx, op, efd, NULL, 0);
 }
 
+static int fr_prep_read(void *ctx, op_t *op, int fd, void *buf, size_t len)
+{
+    return fr_record(ctx, op, fd, buf, len);
+}
+
 static int fr_prep_close(void *ctx, op_t *op, int fd)
 {
     return fr_record(ctx, op, fd, NULL, 0);
@@ -89,19 +102,28 @@ static int fr_wait_cqe(void *ctx, op_t **op, int *res)
     return -EAGAIN;
 }
 
+static int fr_wait_cqe_timeout(void *ctx, op_t **op, int *res, uint64_t timeout_ms)
+{
+    (void)timeout_ms;
+    return fr_wait_cqe(ctx, op, res);
+}
+
 const loop_ops_t *fake_ring_init(fake_ring_t *fr)
 {
     memset(fr, 0, sizeof(*fr));
     fr->ops = (loop_ops_t){
+        .prep_accept = fr_prep_accept,
         .prep_connect = fr_prep_connect,
         .prep_recv = fr_prep_recv,
         .prep_send = fr_prep_send,
         .prep_timeout = fr_prep_timeout,
         .prep_link_timeout = fr_prep_link_timeout,
         .prep_read_eventfd = fr_prep_read_eventfd,
+        .prep_read = fr_prep_read,
         .prep_close = fr_prep_close,
         .submit = fr_submit,
         .wait_cqe = fr_wait_cqe,
+        .wait_cqe_timeout = fr_wait_cqe_timeout,
         .ctx = fr,
     };
     return &fr->ops;

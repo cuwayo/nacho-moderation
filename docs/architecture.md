@@ -189,3 +189,53 @@ from that file by `scripts/docgen.py`.
 The main thread must never issue blocking `read`, `connect`, `poll`, `futex` wait,
 or any SQLite/file I/O. `scripts/check_blocking.sh` verifies this with `strace`
 (see [`io_uring-notes.md`](io_uring-notes.md)).
+
+## Runtime metrics
+
+Runtime counters are defined once in `src/metrics.def`; this table is generated
+from that file. They are dumped on `SIGUSR1` (and are intended for a future
+`/metrics` endpoint, SPEC-ADDENDUM-TOOLCHAIN A8).
+
+<!-- BEGIN GENERATED: metrics-table -->
+| Metric | Description |
+|---|---|
+| `updates_received_total` | Updates received from Telegram |
+| `api_calls_total` | Bot API calls issued, by method and status |
+| `api_429_total` | HTTP 429 responses received |
+| `retries_total` | Request retries after backoff |
+| `queue_depth` | Requests currently queued by the rate limiter |
+| `db_job_milliseconds` | Time spent processing DB jobs |
+| `loop_max_iteration_milliseconds` | Longest event-loop iteration |
+| `active_connections` | Open Bot API connections |
+<!-- END GENERATED: metrics-table -->
+
+## Webhook mode and graceful shutdown (M7)
+
+In webhook mode (`mode = "webhook"`) the update source is an inbound HTTP server
+instead of `getUpdates`:
+
+```mermaid
+sequenceDiagram
+    participant TG as Telegram
+    participant P as Reverse proxy (TLS)
+    participant W as Webhook server (io_uring)
+    participant R as Router
+    TG->>P: POST /webhook (Update)
+    P->>W: plain HTTP (X-Telegram-Bot-Api-Secret-Token)
+    W->>W: verify secret (constant-time)
+    alt authorized POST
+        W->>R: route one Update
+        W-->>P: 200 {"ok":true}
+    else wrong secret
+        W-->>P: 403
+    else wrong method
+        W-->>P: 405
+    end
+```
+
+The listening socket is bound once at startup; accepts, receives and sends are
+all io_uring operations dispatched by op type. On `SIGINT`/`SIGTERM` the bot
+stops the update source, drains in-flight Bot API requests and DB jobs (bounded
+by 10 s, SPEC section 9), flushes the DB worker, and exits 0. Signals are
+delivered through a `signalfd` read on the ring (SPEC section 8), so an arriving
+signal produces a CQE and wakes the loop.

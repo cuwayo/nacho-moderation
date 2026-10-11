@@ -262,6 +262,16 @@ void tg_api_pump(tg_api_t *api)
     }
 }
 
+size_t tg_api_outstanding(const tg_api_t *api)
+{
+    return api == NULL ? 0 : api_pool_outstanding(api->pool);
+}
+
+size_t tg_api_outstanding_polling(const tg_api_t *api)
+{
+    return api == NULL ? 0 : api_pool_outstanding_class(api->pool, POOL_CLASS_POLLING);
+}
+
 const tg_api_ops_t *tg_api_ops(tg_api_t *api)
 {
     return api == NULL ? NULL : &api->ops;

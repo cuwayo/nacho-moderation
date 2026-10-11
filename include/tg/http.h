@@ -96,6 +96,110 @@ int http_resp_feed(http_resp_t *r, const char *buf, size_t len, size_t *consumed
  */
 void http_resp_free(http_resp_t *r);
 
+/* --- Server-side request parser (webhook mode, SPEC section 4.1) ----------- */
+
+/** @brief Request method recognized by the inbound parser. */
+typedef enum {
+    HTTP_METHOD_UNKNOWN = 0, /**< Any method other than GET/POST. */
+    HTTP_METHOD_GET,         /**< GET. */
+    HTTP_METHOD_POST         /**< POST. */
+} http_method_t;
+
+/** @brief Inbound request parser states. */
+typedef enum {
+    HRQ_REQUEST_LINE = 0, /**< Reading the request line. */
+    HRQ_HEADERS,          /**< Reading header lines. */
+    HRQ_BODY,             /**< Reading a Content-Length body. */
+    HRQ_DONE,             /**< Request complete. */
+    HRQ_ERROR             /**< Malformed or oversized request. */
+} http_req_state_t;
+
+/** @brief Maximum length of the captured webhook secret token (bytes). */
+#define HTTP_SECRET_MAX 256u
+
+/**
+ * @brief An incrementally parsed inbound HTTP/1.1 request (webhook mode).
+ *
+ * The mirror image of @ref http_resp_t. It is a pure state machine fed arbitrary
+ * byte chunks (including one byte at a time) that never blocks. It accepts
+ * GET/POST, a Content-Length body, and captures the
+ * `X-Telegram-Bot-Api-Secret-Token` header for verification. A chunked request
+ * body is rejected (the Bot API sends Content-Length; SPEC section 4.1);
+ * oversized headers/bodies are rejected per SPEC section 9.
+ */
+typedef struct {
+    http_method_t method;              /**< Parsed method (UNKNOWN for anything but GET/POST). */
+    char target[512];                  /**< Request target (path), copied from the request line. */
+    http_req_state_t state;            /**< Parser state. */
+    size_t header_bytes;               /**< Bytes consumed by the request line + headers. */
+    size_t max_header;                 /**< Header size cap. */
+    size_t max_body;                   /**< Body size cap. */
+    uint64_t content_length;           /**< Declared Content-Length. */
+    uint64_t remaining;                /**< Bytes left in the Content-Length body. */
+    int has_content_length;            /**< 1 once a Content-Length header was seen. */
+    int chunked;                       /**< 1 if a chunked request body was requested (rejected). */
+    char secret[HTTP_SECRET_MAX + 1u]; /**< Secret-token header value ("" if absent). */
+    char *body;                        /**< Decoded body bytes (heap; owned by the request). */
+    size_t body_len;                   /**< Bytes in body. */
+    size_t body_cap;                   /**< Allocated capacity of body. */
+    char line[1024];                   /**< Partial-line accumulator. */
+    size_t line_len;                   /**< Bytes used in line. */
+} http_req_t;
+
+/**
+ * @brief Initialize an inbound request parser.
+ *
+ * @param[out] r        Request parser to initialize.
+ * @param[in]  max_body Body size cap in bytes (0 for HTTP_MAX_BODY_BYTES).
+ *
+ * @return 0 on success, -EINVAL on a NULL argument.
+ * @ownership Caller must call http_req_free().
+ * @thread_safety Not thread-safe.
+ */
+int http_req_init(http_req_t *r, size_t max_body);
+
+/**
+ * @brief Feed @p len bytes of raw request data into the parser.
+ *
+ * @param[in,out] r        Parser.
+ * @param[in]     buf      Raw bytes.
+ * @param[in]     len      Count.
+ * @param[out]    consumed Receives the number of bytes consumed.
+ *
+ * @return 0 while more data is needed, 1 when the request is complete,
+ *         negative errno (-EPROTO on malformed/oversized/chunked, -ENOMEM) on failure.
+ * @thread_safety Not thread-safe.
+ */
+int http_req_feed(http_req_t *r, const char *buf, size_t len, size_t *consumed);
+
+/**
+ * @brief Free the request body buffer.
+ *
+ * @param[in,out] r Parser (safe to call repeatedly).
+ * @thread_safety Not thread-safe.
+ */
+void http_req_free(http_req_t *r);
+
+/**
+ * @brief Build a minimal HTTP/1.1 response into @p out.
+ *
+ * Emits `HTTP/1.1 <status> <reason>`, a JSON content type, a Content-Length, and
+ * `Connection: close` followed by the body. Used by the webhook server to answer
+ * inbound updates.
+ *
+ * @param[out] out       Output buffer.
+ * @param[in]  outcap    Capacity of @p out.
+ * @param[in]  status    HTTP status code (e.g. 200, 403).
+ * @param[in]  body      Response body (may be NULL when @p body_len is 0).
+ * @param[in]  body_len  Length of @p body in bytes.
+ * @param[out] outlen    Receives the number of bytes written (excluding NUL).
+ *
+ * @return 0 on success, -ENOSPC if @p out is too small, -EINVAL on bad arguments.
+ * @thread_safety Safe (no shared state).
+ */
+int http_response_build(char *out, size_t outcap, int status, const char *body, size_t body_len,
+                        size_t *outlen);
+
 /**
  * @brief Build a minimal HTTP/1.1 request into @p out.
  *

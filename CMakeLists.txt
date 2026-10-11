@@ -59,6 +59,7 @@ add_library(
     src/util.c
     src/http.c
     src/loop.c
+    src/signals.c
     src/net_conn.c
     src/tls.c
     src/resolver.c
@@ -68,6 +69,7 @@ add_library(
     src/metrics.c
     src/api_pool.c
     src/polling.c
+    src/webhook.c
     src/tg_types.c
     src/cache.c
     src/db.c

@@ -28,6 +28,18 @@ typedef struct {
     int (*sock_create)(void *ctx, int family, int type, int proto);
     /** Close a socket (no-op for a negative fd). */
     int (*sock_close)(void *ctx, int fd);
+    /**
+     * @brief Bind a socket to an address (webhook listen setup, startup only).
+     *
+     * @return 0 on success, negative errno on failure.
+     */
+    int (*sock_bind)(void *ctx, int fd, const struct sockaddr *addr, socklen_t len);
+    /**
+     * @brief Mark a bound socket as listening (webhook listen setup, startup only).
+     *
+     * @return 0 on success, negative errno on failure.
+     */
+    int (*sock_listen)(void *ctx, int fd, int backlog);
     void *ctx; /**< Implementation state. */
 } net_ops_t;
 

@@ -55,6 +55,9 @@ typedef struct op {
 
 /** @brief Injectable ring interface; the real impl wraps liburing, fakes record. */
 typedef struct {
+    /** @brief Prepare an OP_ACCEPT SQE. @return 0 or negative errno. */
+    int (*prep_accept)(void *ctx, op_t *op, int listen_fd, struct sockaddr *addr,
+                       socklen_t *addrlen);
     /** @brief Prepare an OP_CONNECT SQE. @return 0 or negative errno. */
     int (*prep_connect)(void *ctx, op_t *op, int fd, const struct sockaddr *sa, socklen_t len);
     /** @brief Prepare an OP_RECV SQE. @return 0 or negative errno. */
@@ -67,11 +70,22 @@ typedef struct {
     int (*prep_link_timeout)(void *ctx, op_t *link, uint64_t ms);
     /** @brief Prepare an eventfd read. @return 0 or negative errno. */
     int (*prep_read_eventfd)(void *ctx, op_t *op, int efd);
+    /** @brief Prepare a read into a caller buffer (signalfd and similar). @return 0 or negative
+     * errno. */
+    int (*prep_read)(void *ctx, op_t *op, int fd, void *buf, size_t len);
     /** @brief Prepare an OP_CLOSE SQE. @return 0 or negative errno. */
     int (*prep_close)(void *ctx, op_t *op, int fd);
     int (*submit)(void *ctx);                        /**< One submit per loop iteration. */
     int (*wait_cqe)(void *ctx, op_t **op, int *res); /**< Block for one CQE. */
-    void *ctx;                                       /**< Implementation state. */
+    /**
+     * @brief Block for one CQE, but at most @p timeout_ms (0 polls).
+     *
+     * Returns -ETIME when the deadline passes with no completion; the loop turns
+     * that into a spurious wakeup. May be NULL, in which case the loop falls back
+     * to the blocking @ref wait_cqe.
+     */
+    int (*wait_cqe_timeout)(void *ctx, op_t **op, int *res, uint64_t timeout_ms);
+    void *ctx; /**< Implementation state. */
 } loop_ops_t;
 
 /** @brief The concrete io_uring loop. */
@@ -115,6 +129,21 @@ const loop_ops_t *loop_ops(loop_t *l);
  * @thread_safety Loop thread only.
  */
 int loop_run_once(loop_t *l);
+
+/**
+ * @brief Run one iteration like @ref loop_run_once but wait at most @p timeout_ms.
+ *
+ * Used by the graceful-shutdown drain (SPEC section 9) so a pending timer cannot
+ * block the loop past the drain budget: a plain @ref loop_run_once waits for the
+ * next CQE indefinitely. A timeout expiry is reported as a spurious wakeup (0).
+ *
+ * @param[in] l          Loop.
+ * @param[in] timeout_ms Maximum wait in milliseconds (0 polls without waiting).
+ *
+ * @return 0 on success (including a timeout), negative errno on a ring error.
+ * @thread_safety Loop thread only.
+ */
+int loop_run_once_timeout(loop_t *l, uint64_t timeout_ms);
 
 /**
  * @brief Destroy the ring and free the loop.

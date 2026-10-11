@@ -89,12 +89,13 @@ jobs:
           if-no-files-found: warn
 
   docs-consistency:
-    name: docs-consistency (SSOT checks C1-C5)
+    name: docs-consistency (SSOT checks C1-C18)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0
       - name: Install deps
         run: |
           sudo apt-get update
@@ -106,7 +107,37 @@ jobs:
           cmake --preset debug
           cmake --build --preset debug
       - name: check_consistency.py
-        run: scripts/check_consistency.py --bin build/debug/tgbot --format github
+        run: |
+          base=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+          fi
+          scripts/check_consistency.py --bin build/debug/tgbot --format github \
+            ${base:+--base "$base"}
+
+  docs-smoke:
+    name: docs-smoke (README quick-start)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config \
+            liburing-dev libssl-dev libsqlite3-dev libpcre2-dev
+      - name: Extract and run README quick-start (title="ci") snippets
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/quickstart.sh
+          import re, pathlib
+          text = pathlib.Path("README.md").read_text(encoding="utf-8")
+          for m in re.finditer(r"```[^\n]*title=\"ci\"\n(.*?)^```", text, re.M | re.S):
+              print(m.group(1))
+          PY
+          bash /tmp/quickstart.sh
 
   build-matrix:
     name: build (${{ matrix.compiler }}, ${{ matrix.preset }})
