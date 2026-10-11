@@ -90,6 +90,90 @@ static int write_temp(const char *text, char **path)
     return 0;
 }
 
+/* webhook.secret is required (min 16 chars) only when mode = webhook (T2). */
+static void test_webhook_secret_required_in_webhook_mode(void **state)
+{
+    (void)state;
+    char err[256] = "";
+
+    /* Missing secret in webhook mode: rejected by --check-config. */
+    char *p_missing = NULL;
+    assert_int_equal(write_temp("bot_token = \"123456:ABC\"\nmode = \"webhook\"\n", &p_missing), 0);
+    assert_int_not_equal(config_check_file(p_missing, err, sizeof(err)), 0);
+    assert_non_null(strstr(err, "webhook.secret"));
+    free(p_missing);
+
+    /* Short secret (15 chars) in webhook mode: rejected. */
+    char *p_short = NULL;
+    assert_int_equal(write_temp("bot_token = \"123456:ABC\"\nmode = \"webhook\"\n"
+                                "[webhook]\nsecret = \"0123456789abcde\"\n",
+                                &p_short),
+                     0);
+    assert_int_not_equal(config_check_file(p_short, err, sizeof(err)), 0);
+    free(p_short);
+
+    /* Exactly 16 characters: accepted. */
+    char *p_ok = NULL;
+    assert_int_equal(write_temp("bot_token = \"123456:ABC\"\nmode = \"webhook\"\n"
+                                "[webhook]\nsecret = \"0123456789abcdef\"\n",
+                                &p_ok),
+                     0);
+    assert_int_equal(config_check_file(p_ok, err, sizeof(err)), 0);
+    free(p_ok);
+
+    /* No secret, but polling mode: accepted. */
+    char *p_poll = NULL;
+    assert_int_equal(write_temp("bot_token = \"123456:ABC\"\nmode = \"polling\"\n", &p_poll), 0);
+    assert_int_equal(config_check_file(p_poll, err, sizeof(err)), 0);
+    free(p_poll);
+}
+
+/* config_validate enforces the same rules on a resolved value set (runtime path). */
+static void test_config_validate_conditional(void **state)
+{
+    (void)state;
+    config_values_t v;
+    assert_int_equal(config_load(NULL, NULL, &v), 0);
+    /* No token: the unconditional requirement fails. */
+    char err[256] = "";
+    assert_int_not_equal(config_validate(&v, err, sizeof(err)), 0);
+    assert_non_null(strstr(err, "bot_token"));
+
+    /* Token present, polling mode: valid. */
+    cfg_override_t poll[] = {{.id = CFG_BOT_TOKEN, .value = "123456:ABC"},
+                             {.id = CFG_MODE, .value = "polling"},
+                             {.value = NULL}};
+    assert_int_equal(config_load(NULL, poll, &v), 0);
+    assert_int_equal(config_validate(&v, err, sizeof(err)), 0);
+
+    /* Token present, webhook mode, no secret: invalid. */
+    cfg_override_t wh_no[] = {{.id = CFG_BOT_TOKEN, .value = "123456:ABC"},
+                              {.id = CFG_MODE, .value = "webhook"},
+                              {.value = NULL}};
+    assert_int_equal(config_load(NULL, wh_no, &v), 0);
+    assert_int_not_equal(config_validate(&v, err, sizeof(err)), 0);
+    assert_non_null(strstr(err, "webhook.secret"));
+
+    /* Token present, webhook mode, short secret: invalid. */
+    cfg_override_t wh_short[] = {{.id = CFG_BOT_TOKEN, .value = "123456:ABC"},
+                                 {.id = CFG_MODE, .value = "webhook"},
+                                 {.id = CFG_WEBHOOK_SECRET, .value = "tooshort"},
+                                 {.value = NULL}};
+    assert_int_equal(config_load(NULL, wh_short, &v), 0);
+    assert_int_not_equal(config_validate(&v, err, sizeof(err)), 0);
+    assert_non_null(strstr(err, "at least 16"));
+
+    /* Token present, webhook mode, long secret: valid. */
+    cfg_override_t wh_ok[] = {{.id = CFG_BOT_TOKEN, .value = "123456:ABC"},
+                              {.id = CFG_MODE, .value = "webhook"},
+                              {.id = CFG_WEBHOOK_SECRET, .value = "0123456789abcdef"},
+                              {.value = NULL}};
+    assert_int_equal(config_load(NULL, wh_ok, &v), 0);
+    assert_int_equal(config_validate(&v, err, sizeof(err)), 0);
+
+    assert_int_equal(config_validate(NULL, err, sizeof(err)), -EINVAL);
+}
+
 static void test_sample_config_is_valid(void **state)
 {
     (void)state;
@@ -231,6 +315,8 @@ int main(void)
         cmocka_unit_test(test_keys_and_env_unique),
         cmocka_unit_test(test_enum_keys_have_values),
         cmocka_unit_test(test_required_bot_token),
+        cmocka_unit_test(test_webhook_secret_required_in_webhook_mode),
+        cmocka_unit_test(test_config_validate_conditional),
         cmocka_unit_test(test_lookup_by_key_and_env),
         cmocka_unit_test(test_sample_config_is_valid),
         cmocka_unit_test(test_unknown_key_rejected),

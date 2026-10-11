@@ -102,7 +102,7 @@ class WebhookIntegrationTest(unittest.TestCase):
         env["API_BASE"] = f"http://127.0.0.1:{api_port}"
         env["MODE"] = "webhook"
         env["WEBHOOK_LISTEN"] = f"127.0.0.1:{webhook_port}"
-        env["WEBHOOK_SECRET"] = "s3cr3t"
+        env["WEBHOOK_SECRET"] = "s3cr3t-token-16chars"
         env["DB_PATH"] = str(Path(self.tmpdir.name) / "bot.db")
         env["SUDO_IDS"] = ""
         proc = subprocess.Popen([str(BINARY)], env=env, stdout=subprocess.DEVNULL,
@@ -132,7 +132,7 @@ class WebhookIntegrationTest(unittest.TestCase):
 
     def test_valid_update_is_routed(self) -> None:
         proc, log, port = self._start()
-        status, _ = self._post(port, HELP_UPDATE, "s3cr3t")
+        status, _ = self._post(port, HELP_UPDATE, "s3cr3t-token-16chars")
         self.assertEqual(status, 200)
         # /help from an admin produces a sendMessage via the mock Bot API.
         ok = self._wait_for_call(log, lambda calls: any(c["method"] == "sendMessage" for c in calls))
@@ -171,6 +171,71 @@ class WebhookIntegrationTest(unittest.TestCase):
             proc.kill()
             self.fail("tgbot did not exit after SIGTERM")
         self.assertEqual(rc, 0)
+
+    def test_no_secret_refuses_to_start(self) -> None:
+        """Webhook mode without a secret must exit non-zero and never listen (T2)."""
+        api_port = free_port()
+        webhook_port = free_port()
+        tmpdir = tempfile.TemporaryDirectory(prefix="nm_wh_nosec_")
+        self.addCleanup(tmpdir.cleanup)
+
+        server = subprocess.Popen(
+            [sys.executable, str(REPO_ROOT / "tests" / "mock" / "mock_tg_server.py"),
+             "--port", str(api_port), "--log", str(Path(tmpdir.name) / "calls.jsonl")],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(server.terminate)
+        assert wait_for_port(api_port), "mock server did not start"
+
+        env = dict(os.environ)
+        env["BOT_TOKEN"] = "123456:TEST"
+        env["API_BASE"] = f"http://127.0.0.1:{api_port}"
+        env["MODE"] = "webhook"
+        env["WEBHOOK_LISTEN"] = f"127.0.0.1:{webhook_port}"
+        env["WEBHOOK_SECRET"] = ""  # deliberately unset
+        env["DB_PATH"] = str(Path(tmpdir.name) / "bot.db")
+        env["SUDO_IDS"] = ""
+        proc = subprocess.run([str(BINARY)], env=env, capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(proc.returncode, 0, msg=f"stdout={proc.stdout} stderr={proc.stderr}")
+        self.assertIn("webhook.secret", proc.stderr)
+        # The listen port must never have been opened.
+        with self.assertRaises(OSError):
+            socket.create_connection(("127.0.0.1", webhook_port), timeout=0.5).close()
+
+    def test_short_secret_refuses_to_start(self) -> None:
+        """A webhook secret shorter than 16 characters is rejected at startup (T2)."""
+        api_port = free_port()
+        webhook_port = free_port()
+        tmpdir = tempfile.TemporaryDirectory(prefix="nm_wh_short_")
+        self.addCleanup(tmpdir.cleanup)
+
+        server = subprocess.Popen(
+            [sys.executable, str(REPO_ROOT / "tests" / "mock" / "mock_tg_server.py"),
+             "--port", str(api_port), "--log", str(Path(tmpdir.name) / "calls.jsonl")],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(server.terminate)
+        assert wait_for_port(api_port), "mock server did not start"
+
+        env = dict(os.environ)
+        env["BOT_TOKEN"] = "123456:TEST"
+        env["API_BASE"] = f"http://127.0.0.1:{api_port}"
+        env["MODE"] = "webhook"
+        env["WEBHOOK_LISTEN"] = f"127.0.0.1:{webhook_port}"
+        env["WEBHOOK_SECRET"] = "short"
+        env["DB_PATH"] = str(Path(tmpdir.name) / "bot.db")
+        env["SUDO_IDS"] = ""
+        proc = subprocess.run([str(BINARY)], env=env, capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(proc.returncode, 0, msg=f"stdout={proc.stdout} stderr={proc.stderr}")
+
+    def test_missing_header_is_403(self) -> None:
+        """A request with no X-Telegram-Bot-Api-Secret-Token header is rejected (T2)."""
+        proc, log, port = self._start()
+        status, _ = self._post(port, HELP_UPDATE, None)  # no header
+        self.assertEqual(status, 403)
+        time.sleep(0.5)
+        proc.terminate()
+        proc.wait(timeout=10)
+        sends = [c for c in read_calls(log) if c["method"] == "sendMessage"]
+        self.assertEqual(sends, [], msg=f"unexpected sends: {sends}")
 
 
 if __name__ == "__main__":

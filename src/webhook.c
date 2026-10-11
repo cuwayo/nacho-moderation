@@ -71,8 +71,11 @@ struct webhook {
 
 int webhook_verify_secret(const char *expected, const char *got)
 {
+    /* A missing expected secret must never authorize a request: an empty or NULL
+     * expected value rejects (startup validation refuses to run webhook mode
+     * without a secret, so this is a defence in depth, not the only gate). */
     if (expected == NULL || expected[0] == '\0') {
-        return 1; /* no secret configured: accept */
+        return 0;
     }
     if (got == NULL) {
         return 0;

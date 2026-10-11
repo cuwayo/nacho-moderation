@@ -121,13 +121,21 @@ timeout = 30
 ```
 
 To receive updates through a webhook instead, put the bot behind a
-TLS-terminating reverse proxy and set:
+TLS-terminating reverse proxy and set `mode` and a `webhook.secret` of at least
+16 characters (webhook mode refuses to start without one, because the secret is
+what authenticates inbound updates):
 
 ```toml
 mode = "webhook"
-webhook.listen = "127.0.0.1:8080"
-webhook.secret = "a-long-random-token"
+
+[webhook]
+listen = "127.0.0.1:8080"
+secret = "a-long-random-token-at-least-16-chars"
 ```
+
+> **Note:** bare keys such as `mode` must appear **above** the first `[table]`
+> header in a TOML file. Either use the `[webhook]` table form above or keep the
+> dotted form (`webhook.secret = "..."`) in the same top-level section as `mode`.
 
 ## Commands
 

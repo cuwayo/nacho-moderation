@@ -121,7 +121,8 @@ void webhook_destroy(webhook_t *w);
  *
  * Uses a constant-time comparison so the token cannot be recovered by timing.
  *
- * @param[in] expected Configured secret ("" accepts any request).
+ * @param[in] expected Configured secret. An empty or NULL value rejects every
+ *                     request (webhook mode refuses to start without a secret).
  * @param[in] got      Header value from the request ("" if absent).
  *
  * @return 1 if the request is authorized, 0 otherwise.
@@ -132,12 +133,12 @@ int webhook_verify_secret(const char *expected, const char *got);
 /**
  * @brief Decide whether a parsed request should be accepted (pure).
  *
- * A request is accepted only when the method is POST, the target is the update
- * path, and the secret matches. The status to answer with is reported in
- * @p out_status (200, 403 or 405).
+ * A request is accepted only when the method is POST and the secret matches. The
+ * status to answer with is reported in @p out_status (200, 403 or 405).
  *
  * @param[in]  req             Parsed request.
- * @param[in]  expected_secret Configured secret ("" accepts any request).
+ * @param[in]  expected_secret Configured secret. An empty or NULL value rejects
+ *                             every request (403).
  * @param[out] out_status      Receives the HTTP status to answer with.
  *
  * @return 1 if the request should be routed, 0 otherwise.

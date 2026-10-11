@@ -10,6 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - README cover image (`docs/assets/cover.png`), checked by consistency check C17.
+
+### Security
+
+- Webhook mode now refuses to start unless `webhook.secret` is set to at least 16
+  characters, and an empty expected secret rejects every request instead of
+  accepting them. Previously `webhook_verify_secret()` accepted any request when
+  no secret was configured, so anyone able to reach the listen port could forge
+  updates and impersonate administrators. The requirement is enforced in
+  `config_validate()` (shared by `--check-config` and startup) via a new
+  `CFG_REQUIRED_IF(...)` mechanism in `src/config.def` (`src/config.c`,
+  `src/webhook.c`, `src/main.c`). Unit tests cover empty, short, wrong, missing
+  and correct secrets; an integration test proves webhook mode with no secret
+  fails to start and a header-less request gets 403.
 - M0 toolchain skeleton: CMake presets (`debug`, `asan`, `tsan`, `coverage`,
   `fuzz`, `release`), sanitizer/warning/hardening modules, vendored `cmocka` and
   `yyjson`, `clang-format`/`clang-tidy`/`cppcheck` configuration, CI workflow, and

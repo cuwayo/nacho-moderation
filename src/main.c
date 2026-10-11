@@ -545,8 +545,11 @@ static int run_bot(const cli_options_t *opts)
         (void)fprintf(stderr, "tgbot: configuration error\n");
         return 2;
     }
-    if (config_get_str(&cfg, CFG_BOT_TOKEN)[0] == '\0') {
-        (void)fprintf(stderr, "tgbot: bot_token is required (set it in config or $BOT_TOKEN)\n");
+    /* Required keys and mode-dependent requirements (e.g. a webhook secret of at
+     * least 16 characters) are enforced here, before any network or listener. */
+    char verr[256] = "";
+    if (config_validate(&cfg, verr, sizeof(verr)) != 0) {
+        (void)fprintf(stderr, "tgbot: %s\n", verr[0] != '\0' ? verr : "invalid configuration");
         return 2;
     }
     apply_log_level(opts, &cfg);

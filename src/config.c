@@ -17,6 +17,14 @@
 
 #include "tables.h"
 
+/** @brief One conditional requirement row (from CFG_REQUIRED_IF in config.def). */
+typedef struct {
+    cfg_id_t id;       /**< Key that becomes required. */
+    cfg_id_t dep;      /**< Key whose value selects the requirement. */
+    const char *value; /**< Required value of @ref dep. */
+    size_t min_len;    /**< Minimum length of @ref id's value (0 = no floor). */
+} cfg_req_if_t;
+
 /* Schema generated from the single source of truth (src/config.def).
  * Positional initializers match cfg_desc_t's field order (key, env, def, brief,
  * id, type, restart, secret); designated initializers cannot be used because the
@@ -25,7 +33,9 @@ const cfg_desc_t config_table[CFG_COUNT] = {
 #define K(id, key, env, type, def, restart, secret, brief)                                         \
     {key, env, def, brief, CFG_##id, type, restart, secret},
 #define CFG_REQUIRED(id)
+#define CFG_REQUIRED_IF(id, dep, val, minlen)
 #include "config.def"
+#undef CFG_REQUIRED_IF
 #undef CFG_REQUIRED
 #undef K
 };
@@ -35,7 +45,20 @@ const cfg_desc_t config_table[CFG_COUNT] = {
 static const int config_required[CFG_COUNT] = {
 #define K(id, key, env, type, def, restart, secret, brief)
 #define CFG_REQUIRED(id) [CFG_##id] = 1,
+#define CFG_REQUIRED_IF(id, dep, val, minlen)
 #include "config.def"
+#undef CFG_REQUIRED_IF
+#undef CFG_REQUIRED
+#undef K
+};
+
+/* Conditional requirements generated from CFG_REQUIRED_IF(...) in config.def. */
+static const cfg_req_if_t config_required_if[] = {
+#define K(id, key, env, type, def, restart, secret, brief)
+#define CFG_REQUIRED(id)
+#define CFG_REQUIRED_IF(id, dep, val, minlen) {CFG_##id, CFG_##dep, val, minlen},
+#include "config.def"
+#undef CFG_REQUIRED_IF
 #undef CFG_REQUIRED
 #undef K
 };
@@ -55,6 +78,52 @@ int config_is_required(cfg_id_t id)
         return 0;
     }
     return config_required[id];
+}
+
+/* Check the CFG_REQUIRED_IF rules: a key that must be present (and long enough)
+ * when another key has a particular value. Returns 0 or -EINVAL. */
+static int validate_required_if(const config_values_t *v, char *errbuf, size_t errcap)
+{
+    for (size_t r = 0; r < sizeof(config_required_if) / sizeof(config_required_if[0]); ++r) {
+        const cfg_req_if_t *req = &config_required_if[r];
+        if (strcmp(v->value[req->dep], req->value) != 0) {
+            continue;
+        }
+        const char *val = v->value[req->id];
+        if (val[0] == '\0') {
+            if (errbuf != NULL) {
+                (void)snprintf(errbuf, errcap, "key \"%s\" is required when \"%s\" is \"%s\"",
+                               config_table[req->id].key, config_table[req->dep].key, req->value);
+            }
+            return -EINVAL;
+        }
+        if (strlen(val) < req->min_len) {
+            if (errbuf != NULL) {
+                (void)snprintf(errbuf, errcap,
+                               "key \"%s\" must be at least %zu characters when \"%s\" is \"%s\"",
+                               config_table[req->id].key, req->min_len, config_table[req->dep].key,
+                               req->value);
+            }
+            return -EINVAL;
+        }
+    }
+    return 0;
+}
+
+int config_validate(const config_values_t *v, char *errbuf, size_t errcap)
+{
+    if (v == NULL) {
+        return -EINVAL;
+    }
+    for (size_t i = 0; i < (size_t)CFG_COUNT; ++i) {
+        if (config_required[i] && v->value[i][0] == '\0') {
+            if (errbuf != NULL) {
+                (void)snprintf(errbuf, errcap, "missing required key \"%s\"", config_table[i].key);
+            }
+            return -EINVAL;
+        }
+    }
+    return validate_required_if(v, errbuf, errcap);
 }
 
 const cfg_desc_t *config_lookup_key(const char *key)
@@ -349,16 +418,21 @@ int config_parse_file(const char *path, int (*store)(void *user, cfg_id_t id, co
 
 /** @brief Validation state threaded through config_parse_file's store callback. */
 typedef struct {
-    int seen[CFG_COUNT]; /**< 1 once a key has been provided. */
-    char *errbuf;        /**< Error message buffer (may be NULL). */
-    size_t errcap;       /**< Capacity of errbuf. */
-    int failed;          /**< 1 once a validation error has been recorded. */
+    int seen[CFG_COUNT];       /**< 1 once a key has been provided. */
+    char *errbuf;              /**< Error message buffer (may be NULL). */
+    size_t errcap;             /**< Capacity of errbuf. */
+    int failed;                /**< 1 once a validation error has been recorded. */
+    config_values_t *resolved; /**< Values captured for conditional validation (may be NULL). */
 } check_state_t;
 
 static int check_store(void *user, cfg_id_t id, const char *value)
 {
     check_state_t *st = user;
     st->seen[id] = 1;
+    if (st->resolved != NULL) {
+        (void)snprintf(st->resolved->value[id], CFG_VALUE_MAX, "%s", value);
+        st->resolved->set[id] = 1;
+    }
 
     const cfg_desc_t *d = &config_table[id];
     if (d->type != CFG_ENUM) {
@@ -385,7 +459,13 @@ static int check_store(void *user, cfg_id_t id, const char *value)
 
 int config_check_file(const char *path, char *errbuf, size_t errcap)
 {
-    check_state_t st = {.errbuf = errbuf, .errcap = errcap, .failed = 0};
+    config_values_t resolved;
+    memset(&resolved, 0, sizeof(resolved));
+    for (size_t i = 0; i < (size_t)CFG_COUNT; ++i) {
+        (void)snprintf(resolved.value[i], CFG_VALUE_MAX, "%s", config_table[i].def);
+    }
+
+    check_state_t st = {.errbuf = errbuf, .errcap = errcap, .failed = 0, .resolved = &resolved};
     size_t err_line = 0;
 
     int rc = config_parse_file(path, check_store, &st, &err_line);
@@ -404,7 +484,12 @@ int config_check_file(const char *path, char *errbuf, size_t errcap)
             return -EINVAL;
         }
     }
-    return 0;
+
+    /* Conditional requirements (e.g. the webhook secret) depend on values that may
+     * be defaults or come from the file, so validate the resolved set built from
+     * defaults + this file. Environment variables and CLI flags are separate
+     * sources, validated by the runtime loader, not by --check-config. */
+    return config_validate(&resolved, errbuf, errcap);
 }
 
 /* --- Loader (S3 precedence: CLI > env > file > default) -------------------- */
@@ -479,7 +564,9 @@ int config_load(const char *path, const cfg_override_t *overrides, config_values
         }
     }
 
-    /* Validate enum values from every source. */
+    /* Validate enum values from every source. Required-key and conditional
+     * requirements are enforced by config_validate(), which --check-config and
+     * the runtime startup path both call. */
     for (size_t i = 0; i < (size_t)CFG_COUNT; ++i) {
         if (out->value[i][0] != '\0' && validate_value((cfg_id_t)i, out->value[i]) != 0) {
             return -EINVAL;

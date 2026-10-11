@@ -22,7 +22,9 @@
 typedef enum {
 #define K(id, key, env, type, def, restart, secret, brief) CFG_##id,
 #define CFG_REQUIRED(id)
+#define CFG_REQUIRED_IF(id, dep, val, minlen)
 #include "config.def"
+#undef CFG_REQUIRED_IF
 #undef CFG_REQUIRED
 #undef K
     CFG_COUNT /**< Number of configuration keys. */
@@ -183,6 +185,24 @@ typedef struct {
  * @thread_safety Not thread-safe (reads the environment and files).
  */
 int config_load(const char *path, const cfg_override_t *overrides, config_values_t *out);
+
+/**
+ * @brief Validate resolved configuration values against the table's rules.
+ *
+ * Enforces the unconditional required set (`CFG_REQUIRED`) and the conditional
+ * requirements (`CFG_REQUIRED_IF`), e.g. that `webhook.secret` is present and at
+ * least 16 characters long when `mode = "webhook"`. Because both `--check-config`
+ * and the runtime loader call this, an invalid combination is rejected at startup
+ * and cannot reach the network or the webhook listener.
+ *
+ * @param[in]  v      Resolved values (as returned by config_load).
+ * @param[out] errbuf Receives a human-readable error message (may be NULL).
+ * @param[in]  errcap Capacity of @p errbuf in bytes.
+ *
+ * @return 0 if the values satisfy every rule, -EINVAL otherwise.
+ * @thread_safety Read-only; safe from any thread.
+ */
+int config_validate(const config_values_t *v, char *errbuf, size_t errcap);
 
 /**
  * @brief Return the effective string value of a key.

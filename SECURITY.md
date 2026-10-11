@@ -34,7 +34,10 @@ Out of scope:
   environment, and is redacted as `bot<token>` everywhere it could be logged or
   dumped.
 - Webhook mode verifies the `X-Telegram-Bot-Api-Secret-Token` header and rejects
-  mismatches with 403.
+  mismatches with 403. An empty or missing expected secret rejects **every**
+  request, and webhook mode **refuses to start** unless `webhook.secret` is set to
+  at least 16 characters (enforced at startup and by `--check-config`), so a
+  misconfigured deployment cannot accept forged updates.
 - All SQL uses prepared statements; user text sent to Telegram is HTML-escaped.
 - The systemd unit (M7) restricts address families and system calls, explicitly
   allowing only the io_uring syscalls the bot needs.

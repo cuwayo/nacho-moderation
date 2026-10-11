@@ -21,7 +21,7 @@ sudo_ids = ""
 # env: WEBHOOK_LISTEN
 listen = "127.0.0.1:8080"
 
-# X-Telegram-Bot-Api-Secret-Token value verified on inbound webhook requests
+# X-Telegram-Bot-Api-Secret-Token value verified on inbound webhook requests; required (min 16 chars) in webhook mode
 # env: WEBHOOK_SECRET
 secret = "REPLACE_ME"
 

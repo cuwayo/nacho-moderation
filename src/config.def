@@ -1,8 +1,9 @@
 /* config.def - single source of truth for configuration keys.
  *
  * SPEC-ADDENDUM-SSOT S3. This file is #include-ed (never compiled on its own), so
- * it has no include guard and no declarations: only K(...) rows and a trailing
- * CFG_REQUIRED(...) list. Every inclusion site must define BOTH macros.
+ * it has no include guard and no declarations: only K(...) rows, a trailing
+ * CFG_REQUIRED(...) list, and a CFG_REQUIRED_IF(...) list. Every inclusion site
+ * must define ALL THREE macros.
  *
  *   K(id, toml_key, env_var, type, default, restart, secret, brief)
  *
@@ -16,13 +17,23 @@
  *   secret     1 => never logged, redacted in --dump-config, sample shows placeholder
  *   brief      1-256 chars, English, shown in --dump-config-json and docs
  *
+ *   CFG_REQUIRED(id)
+ *     The key must be provided (no usable default) in every mode.
+ *
+ *   CFG_REQUIRED_IF(id, dep_id, dep_value, min_len)
+ *     The key must be provided when the resolved value of dep_id equals
+ *     dep_value, and its value must then be at least min_len characters long
+ *     (0 = no length floor). Used for mode-dependent requirements such as the
+ *     webhook secret. Checked by config_validate(), which both --check-config
+ *     and the runtime loader call, so an invalid combination never starts.
+ *
  * Precedence (implemented once, driven by this table): CLI flag > env var >
- * config file > default. Keys flagged required are listed in CFG_REQUIRED below.
+ * config file > default.
  */
 K(BOT_TOKEN, "bot_token", "BOT_TOKEN", CFG_STR, "", 1, 1, "Telegram bot token issued by BotFather (required)")
 K(MODE, "mode", "MODE", CFG_ENUM, "polling", 1, 0, "Update source: polling or webhook")
 K(WEBHOOK_LISTEN, "webhook.listen", "WEBHOOK_LISTEN", CFG_STR, "127.0.0.1:8080", 1, 0, "Webhook listen address behind a TLS-terminating reverse proxy")
-K(WEBHOOK_SECRET, "webhook.secret", "WEBHOOK_SECRET", CFG_STR, "", 1, 1, "X-Telegram-Bot-Api-Secret-Token value verified on inbound webhook requests")
+K(WEBHOOK_SECRET, "webhook.secret", "WEBHOOK_SECRET", CFG_STR, "", 1, 1, "X-Telegram-Bot-Api-Secret-Token value verified on inbound webhook requests; required (min 16 chars) in webhook mode")
 K(DB_PATH, "db.path", "DB_PATH", CFG_STR, "./bot.db", 1, 0, "SQLite database file path")
 K(SUDO_IDS, "sudo_ids", "SUDO_IDS", CFG_I64_LIST, "", 1, 0, "Comma-separated Telegram user ids granted bot-level sudo")
 K(API_POOL_SIZE, "api.pool_size", "API_POOL_SIZE", CFG_INT, "4", 1, 0, "Number of keep-alive TLS connections to the Bot API")
@@ -33,3 +44,6 @@ K(LOG_LEVEL, "log.level", "LOG_LEVEL", CFG_ENUM, "info", 0, 0, "Log verbosity: e
 
 /* Keys whose value must be provided (no usable default). */
 CFG_REQUIRED(BOT_TOKEN)
+
+/* Keys required only in a particular mode, with a minimum length. */
+CFG_REQUIRED_IF(WEBHOOK_SECRET, MODE, "webhook", 16)

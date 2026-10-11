@@ -49,6 +49,11 @@ forward the `X-Telegram-Bot-Api-Secret-Token` header; the bot rejects a request
 whose token does not match `webhook.secret` with HTTP 403 (and a non-POST request
 with 405).
 
+> **Required:** the secret must be set and at least 16 characters long. The bot
+> **refuses to start** in webhook mode otherwise (and `--check-config` reports the
+> same error). Without a secret, anyone who can reach the port could forge updates
+> and impersonate administrators. Generate one with `openssl rand -hex 32`.
+
 Register the public URL with Telegram out of band (for example with a
 `setWebhook` call using your own tooling); the bot does not call `setWebhook`
 itself. Example nginx location:

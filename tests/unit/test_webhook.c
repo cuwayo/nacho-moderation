@@ -88,12 +88,22 @@ static void on_update(const char *body, size_t len, void *ctx)
 static void test_verify_secret(void **state)
 {
     (void)state;
-    assert_int_equal(webhook_verify_secret("", ""), 1);       /* no secret: accept */
-    assert_int_equal(webhook_verify_secret("abc", "abc"), 1); /* exact match */
-    assert_int_equal(webhook_verify_secret("abc", "abd"), 0);
-    assert_int_equal(webhook_verify_secret("abc", "ab"), 0); /* length differs */
+    /* An empty or NULL expected secret rejects everything (defence in depth; the
+     * server refuses to start without a configured secret). */
+    assert_int_equal(webhook_verify_secret("", ""), 0);
+    assert_int_equal(webhook_verify_secret("", "anything"), 0);
+    assert_int_equal(webhook_verify_secret(NULL, "anything"), 0);
+    assert_int_equal(webhook_verify_secret(NULL, NULL), 0);
+    /* A missing header value is rejected. */
     assert_int_equal(webhook_verify_secret("abc", ""), 0);
+    assert_int_equal(webhook_verify_secret("abc", NULL), 0);
+    /* A correct secret matches. */
+    assert_int_equal(webhook_verify_secret("abc", "abc"), 1);
+    /* Wrong secrets of equal and different length are rejected. */
+    assert_int_equal(webhook_verify_secret("abc", "abd"), 0);
+    assert_int_equal(webhook_verify_secret("abc", "ab"), 0);
     assert_int_equal(webhook_verify_secret("abc", "abcd"), 0);
+    assert_int_equal(webhook_verify_secret("abc", "ABC"), 0);
 }
 
 static void test_request_ok(void **state)
@@ -114,12 +124,29 @@ static void test_request_ok(void **state)
     assert_int_equal(status, 403);
     http_req_free(&req);
 
+    /* Missing secret header -> 403 and never routed. */
+    http_req_t nohdr;
+    assert_int_equal(http_req_init(&nohdr, 0), 0);
+    const char *noh = "POST /w HTTP/1.1\r\nContent-Length: 0\r\n\r\n";
+    assert_int_equal(http_req_feed(&nohdr, noh, strlen(noh), &consumed), 1);
+    assert_int_equal(webhook_request_ok(&nohdr, "s", &status), 0);
+    assert_int_equal(status, 403);
+    http_req_free(&nohdr);
+
+    /* An empty configured secret rejects a valid-looking request. */
+    http_req_t empty;
+    assert_int_equal(http_req_init(&empty, 0), 0);
+    assert_int_equal(http_req_feed(&empty, post, strlen(post), &consumed), 1);
+    assert_int_equal(webhook_request_ok(&empty, "", &status), 0);
+    assert_int_equal(status, 403);
+    http_req_free(&empty);
+
     /* Wrong method -> 405. */
     http_req_t get;
     assert_int_equal(http_req_init(&get, 0), 0);
     const char *g = "GET /w HTTP/1.1\r\n\r\n";
     assert_int_equal(http_req_feed(&get, g, strlen(g), &consumed), 1);
-    assert_int_equal(webhook_request_ok(&get, "", &status), 0);
+    assert_int_equal(webhook_request_ok(&get, "s", &status), 0);
     assert_int_equal(status, 405);
     http_req_free(&get);
 }
