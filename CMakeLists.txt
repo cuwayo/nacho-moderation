@@ -38,6 +38,15 @@ find_package(Liburing REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PCRE2 REQUIRED IMPORTED_TARGET libpcre2-8)
 
+# CMake's FindSQLite3 module exports the imported target SQLite::SQLite3. In
+# CMake >= 4.3 the module also defines SQLite3::SQLite3 (and marks the old name
+# deprecated); stock Ubuntu 24.04 ships CMake 3.28, which defines only the old
+# name. Alias the new name to the old one when it is absent so a single link
+# reference (SQLite3::SQLite3) works on both.
+if(NOT TARGET SQLite3::SQLite3)
+    add_library(SQLite3::SQLite3 ALIAS SQLite::SQLite3)
+endif()
+
 # Aggregate interface target carrying every system dependency, so targets only
 # need to link `nm_deps`. Vendored yyjson/cmocka are added via third_party/.
 add_library(nm_deps INTERFACE)
