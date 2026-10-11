@@ -1,5 +1,7 @@
 # nacho-moderator
 
+![nacho-moderator cover](docs/assets/cover.png)
+
 An **io_uring-based Telegram admin/moderator bot** written in **C11**. All network
 I/O runs asynchronously through `liburing` in a single-threaded event loop;
 blocking work (SQLite, DNS) is isolated in worker threads that signal the loop

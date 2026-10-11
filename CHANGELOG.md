@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- README cover image (`docs/assets/cover.png`), checked by consistency check C17.
 - M0 toolchain skeleton: CMake presets (`debug`, `asan`, `tsan`, `coverage`,
   `fuzz`, `release`), sanitizer/warning/hardening modules, vendored `cmocka` and
   `yyjson`, `clang-format`/`clang-tidy`/`cppcheck` configuration, CI workflow, and
