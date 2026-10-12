@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import stat
 import tomllib
 from collections.abc import Iterator
 from enum import StrEnum
@@ -241,6 +242,55 @@ def _read_toml(path: Path, *, required: bool) -> dict[str, Any]:
         raise ConfigError(f"invalid TOML in {path}: {exc}") from exc
 
 
+def _contains_secret(data: dict[str, Any]) -> bool:
+    """Return whether a parsed config mapping holds a secret value.
+
+    A secret is present when ``bot_token`` is non-empty or ``webhook.secret`` is
+    non-empty; an empty placeholder does not count, so a tokenless CI config is
+    not treated as secret-bearing.
+
+    Args:
+        data: The parsed TOML mapping.
+
+    Returns:
+        ``True`` if a secret key carries a value.
+    """
+    if str(data.get("bot_token", "") or "").strip():
+        return True
+    webhook = data.get("webhook")
+    return bool(isinstance(webhook, dict) and str(webhook.get("secret", "") or "").strip())
+
+
+def check_file_permissions(path: Path) -> None:
+    """Refuse a config file that holds a secret and is group/other accessible.
+
+    The file is resolved first (so a symlink is checked by its target's mode),
+    then its permission bits are inspected. Any group or other bit
+    (``mode & 0o077``) is refused: a secret-bearing file readable by another
+    user is a leak. An environment-only configuration is unaffected because
+    there is no file to check.
+
+    Args:
+        path: The config file to inspect.
+
+    Raises:
+        ConfigError: If the file holds a secret and is group/other accessible.
+    """
+    if not path.exists():
+        return
+    resolved = path.resolve()
+    try:
+        mode = stat.S_IMODE(resolved.stat().st_mode)
+    except OSError as exc:  # pragma: no cover - stat on a resolved existing path
+        raise ConfigError(f"cannot stat config file {path}: {exc}") from exc
+    if mode & 0o077:
+        raise ConfigError(
+            f"{path} contains a secret but is group/other accessible "
+            f"(mode {mode:04o}); run `chmod 600 {path}` or pass "
+            "--allow-insecure-config (env ALLOW_INSECURE_CONFIG=1) to override"
+        )
+
+
 def _set_nested(target: dict[str, Any], dotted: str, value: Any) -> None:
     """Assign ``value`` at a dotted key path, creating intermediate dicts."""
     head, _, tail = dotted.partition(".")
@@ -257,6 +307,7 @@ def load_settings(
     required_file: bool = False,
     environ: dict[str, str] | None = None,
     cli_overrides: dict[str, Any] | None = None,
+    allow_insecure_config: bool = False,
 ) -> Settings:
     """Load and validate settings from all four sources.
 
@@ -265,17 +316,22 @@ def load_settings(
         required_file: If ``True``, a missing file is an error.
         environ: Environment mapping (defaults to :data:`os.environ`).
         cli_overrides: Highest-priority dotted-key overrides from the CLI.
+        allow_insecure_config: Skip the secret-bearing file permission check.
 
     Returns:
         The validated :class:`Settings`.
 
     Raises:
-        ConfigError: If a file is missing/invalid or validation fails.
+        ConfigError: If a file is missing/invalid, holds a secret while being
+            group/other accessible (and ``allow_insecure_config`` is false), or
+            validation fails.
     """
     path = config_path if config_path is not None else DEFAULT_CONFIG_PATH
     env = environ if environ is not None else dict(os.environ)
 
     merged: dict[str, Any] = _read_toml(path, required=required_file)
+    if not allow_insecure_config and _contains_secret(merged):
+        check_file_permissions(path)
     for env_name, key in _ENV_MAP.items():
         value = env.get(env_name)
         if value is not None and value != "":
@@ -305,6 +361,14 @@ def parse_cli(argv: list[str] | None = None) -> tuple[argparse.Namespace, dict[s
     )
     parser.add_argument("--check-config", default=None, help="validate a config file and exit")
     parser.add_argument(
+        "--allow-insecure-config",
+        action="store_true",
+        help=(
+            "start even if the config file holds a secret and is group/other "
+            "accessible (for containers/CI; env ALLOW_INSECURE_CONFIG=1)"
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         default=None,
         choices=[level.value for level in LogLevelName],
@@ -317,3 +381,24 @@ def parse_cli(argv: list[str] | None = None) -> tuple[argparse.Namespace, dict[s
     if args.log_level is not None:
         overrides["log.level"] = args.log_level
     return args, overrides
+
+
+#: Values of ``ALLOW_INSECURE_CONFIG`` that count as "on".
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def resolve_allow_insecure(args: argparse.Namespace, environ: dict[str, str] | None = None) -> bool:
+    """Resolve the insecure-config override from the flag or the environment.
+
+    Args:
+        args: The parsed CLI namespace (its ``allow_insecure_config`` flag).
+        environ: Environment mapping (defaults to :data:`os.environ`).
+
+    Returns:
+        ``True`` when the override is requested by the flag or by
+        ``ALLOW_INSECURE_CONFIG`` being set to a truthy value.
+    """
+    if getattr(args, "allow_insecure_config", False):
+        return True
+    env = environ if environ is not None else dict(os.environ)
+    return env.get("ALLOW_INSECURE_CONFIG", "").strip().lower() in _TRUTHY

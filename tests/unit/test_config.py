@@ -13,6 +13,9 @@ from nacho_moderator.errors import ConfigError
 def _write(tmp_path: Path, text: str) -> Path:
     path = tmp_path / "config.toml"
     path.write_text(text, encoding="utf-8")
+    # A secret-bearing file must be 0600 or the loader refuses it (P2); these
+    # tests exercise loading, not the permission check.
+    path.chmod(0o600)
     return path
 
 

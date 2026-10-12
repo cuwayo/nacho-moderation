@@ -38,6 +38,10 @@ In scope:
   `X-Telegram-Bot-Api-Secret-Token` header; a mismatch is rejected with 403, and
   the bot refuses to start in webhook mode without a secret of at least 16
   characters.
+- A config file that holds a secret must be private: if it has any group/other
+  permission bit set the bot refuses to start and asks for `chmod 600`. The
+  check resolves symlinks (the target's mode is used). `--allow-insecure-config`
+  (env `ALLOW_INSECURE_CONFIG=1`) exists for containers and CI.
 - Captcha and settings-panel callback payloads embed the owning user id and are
   rejected when pressed by anyone else.
 - Every SQL query uses bound parameters; no SQL is built by string concatenation.

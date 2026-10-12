@@ -63,9 +63,14 @@ Create a bot with [@BotFather](https://t.me/BotFather) and note its token, then:
 
 ```sh
 cp config/config.example.toml config.toml
+chmod 600 config.toml   # the file holds the bot token; the bot refuses a group/other-readable secret
 # edit config.toml and set bot_token
 uv run nacho-moderator --config config.toml
 ```
+
+In containers or CI, where a baked-in config file is often world-readable, pass
+`--allow-insecure-config` (or set `ALLOW_INSECURE_CONFIG=1`) to skip the
+permission check. See [`docs/configuration.md`](docs/configuration.md).
 
 Add the bot to a group, grant it the administrator rights you want it to use, and
 verify with `/help`.

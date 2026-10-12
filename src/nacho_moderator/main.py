@@ -31,6 +31,7 @@ from nacho_moderator.config import (
     Settings,
     load_settings,
     parse_cli,
+    resolve_allow_insecure,
 )
 from nacho_moderator.db import Database
 from nacho_moderator.errors import ConfigError
@@ -175,15 +176,21 @@ def main(argv: list[str] | None = None) -> int:
 
     configure_logging(LogLevelName(overrides.get("log.level", LogLevelName.INFO.value)))
 
+    allow_insecure = resolve_allow_insecure(args)
     try:
         if args.check_config is not None:
-            load_settings(Path(args.check_config), required_file=True)
+            load_settings(
+                Path(args.check_config),
+                required_file=True,
+                allow_insecure_config=allow_insecure,
+            )
             print(f"{args.check_config}: ok")
             return 0
         config = load_settings(
             Path(args.config) if args.config else None,
             required_file=args.config is not None,
             cli_overrides=overrides,
+            allow_insecure_config=allow_insecure,
         )
     except ConfigError as exc:
         print(f"nacho-moderator: error: {exc}", file=sys.stderr)

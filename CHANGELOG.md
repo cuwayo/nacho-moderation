@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Settings.__repr__`/`__str__` mask the token and secret, and a config
   validation error no longer echoes the rejected value (which previously printed
   the token to stderr).
+- **A secret-bearing config file must be private.** The bot now refuses to start
+  when the config file holds a `bot_token` or `webhook.secret` and its mode has
+  any group/other bit set (`mode & 0o077`), and tells the user to `chmod 600` it.
+  The check resolves symlinks first (the target's mode is inspected). An
+  environment-only configuration is unaffected. `--allow-insecure-config` (env
+  `ALLOW_INSECURE_CONFIG=1`) overrides the check for containers and CI.
 
 ### Fixed
 

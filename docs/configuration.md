@@ -34,9 +34,21 @@ rejected.
   bot refuses to start otherwise.
 - `api.pool_size` must be at least 1, `polling.timeout` non-negative, and
   `api.request_timeout_ms` positive.
+- If the config file contains a secret (`bot_token` or `webhook.secret`) and its
+  mode has any group or other bit set (`mode & 0o077`), the bot refuses to start
+  and tells you to `chmod 600` the file. The check resolves symlinks first, so a
+  symlink to an insecure file is refused too. A configuration supplied entirely
+  through environment variables is unaffected (there is no file to check).
 
 `nacho-moderator --check-config <file>` validates a file without starting the
 bot and exits non-zero on any problem.
+
+## Insecure config override
+
+For containers and CI, where the config file is often baked in with a
+world-readable mode, pass `--allow-insecure-config` (or set
+`ALLOW_INSECURE_CONFIG=1`) to skip the permission check. The check is only ever
+skipped when this override is set; never leave it set on a multi-user host.
 
 ## Example
 
