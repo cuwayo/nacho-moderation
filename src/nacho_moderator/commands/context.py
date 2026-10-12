@@ -55,6 +55,10 @@ class CommandContext:
     target_label: str = ""
     bot_username: str | None = None
     is_group: bool = True
+    #: The bot's own user id, so a handler can refuse acting on itself.
+    bot_id: int = 0
+    #: The chat's administrator map (user id -> subject), as resolved by the router.
+    admins: dict[int, Subject] | None = None
     #: Called by /reload to drop the cached admin list for this chat.
     invalidate_admins: object | None = None
     #: The automod service, so blacklist writes can drop its cache.

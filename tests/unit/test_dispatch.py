@@ -26,6 +26,10 @@ _CHAT = Chat(id=CHAT_ID, type="supergroup", title="Testers")
 _BOT_SUBJECT = Subject(BOT_ID, Role.ADMIN, Right.RESTRICT | Right.DELETE | Right.PIN)
 _BOT_ADMINS = {BOT_ID: _BOT_SUBJECT}
 
+# The bot with the promote right (needed by /promote and /demote).
+_BOT_PROMOTE_SUBJECT = Subject(BOT_ID, Role.ADMIN, Right.PROMOTE)
+_BOT_PROMOTE_ADMINS = {BOT_ID: _BOT_PROMOTE_SUBJECT}
+
 
 class _FixedRandom:
     def token_hex(self, nbytes: int) -> str:
@@ -269,3 +273,183 @@ async def test_subject_for_user_from_admins() -> None:
     admins = {ADMIN_ID: Subject(ADMIN_ID, Role.ADMIN, Right.RESTRICT)}
     subject = subject_for_user(ADMIN_ID, admins, set())
     assert subject.role is Role.ADMIN
+
+
+# --- /promote and /demote permission matrix --------------------------------
+
+
+async def test_promote_admin_with_right_allowed(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    app = await _app(fake_bot, db, fake_clock)
+    caller = Subject(ADMIN_ID, Role.ADMIN, Right.PROMOTE)
+    await _dispatch(
+        app,
+        _message(f"/promote {TARGET_ID}", user_id=ADMIN_ID),
+        caller=caller,
+        admins=_BOT_PROMOTE_ADMINS,
+    )
+    assert fake_bot.called("promote_chat_member")
+
+
+async def test_promote_admin_without_right_denied(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    app = await _app(fake_bot, db, fake_clock)
+    caller = Subject(ADMIN_ID, Role.ADMIN, Right.DELETE)  # lacks PROMOTE
+    await _dispatch(
+        app,
+        _message(f"/promote {TARGET_ID}", user_id=ADMIN_ID),
+        caller=caller,
+        admins=_BOT_PROMOTE_ADMINS,
+    )
+    assert fake_bot.called("promote_chat_member") == []
+    assert any("not allowed" in t for t in fake_bot.texts())
+
+
+async def test_promote_member_denied(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    app = await _app(fake_bot, db, fake_clock)
+    caller = Subject(TARGET_ID, Role.ANYONE)
+    await _dispatch(
+        app,
+        _message(f"/promote {ADMIN_ID}", user_id=TARGET_ID),
+        caller=caller,
+        admins=_BOT_PROMOTE_ADMINS,
+    )
+    assert fake_bot.called("promote_chat_member") == []
+
+
+async def test_promote_owner_allowed(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    app = await _app(fake_bot, db, fake_clock)
+    caller = Subject(ADMIN_ID, Role.OWNER)
+    await _dispatch(
+        app,
+        _message(f"/promote {TARGET_ID}", user_id=ADMIN_ID),
+        caller=caller,
+        admins=_BOT_PROMOTE_ADMINS,
+    )
+    assert fake_bot.called("promote_chat_member")
+
+
+async def test_promote_sudo_allowed(fake_bot: FakeBot, db: Database, fake_clock: FakeClock) -> None:
+    app = await _app(fake_bot, db, fake_clock)
+    caller = Subject(ADMIN_ID, Role.SUDO, Right.NONE, is_sudo=True)
+    await _dispatch(
+        app,
+        _message(f"/promote {TARGET_ID}", user_id=ADMIN_ID),
+        caller=caller,
+        admins=_BOT_PROMOTE_ADMINS,
+    )
+    assert fake_bot.called("promote_chat_member")
+
+
+async def test_promote_bot_lacking_right_reports(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    app = await _app(fake_bot, db, fake_clock)
+    caller = Subject(ADMIN_ID, Role.ADMIN, Right.PROMOTE)
+    admins = {BOT_ID: Subject(BOT_ID, Role.ADMIN, Right.DELETE)}  # bot lacks PROMOTE
+    await _dispatch(
+        app, _message(f"/promote {TARGET_ID}", user_id=ADMIN_ID), caller=caller, admins=admins
+    )
+    assert fake_bot.called("promote_chat_member") == []
+    assert any("I lack the rights" in t for t in fake_bot.texts())
+
+
+async def test_promote_owner_target_blocked_by_generic_guard(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    """Promoting the owner is blocked by the standard protected-target guard."""
+    app = await _app(fake_bot, db, fake_clock)
+    caller = Subject(ADMIN_ID, Role.ADMIN, Right.PROMOTE)
+    admins = {**_BOT_PROMOTE_ADMINS, ADMIN_ID: Subject(ADMIN_ID, Role.OWNER)}
+    await _dispatch(
+        app, _message(f"/promote {ADMIN_ID}", user_id=ADMIN_ID), caller=caller, admins=admins
+    )
+    assert fake_bot.called("promote_chat_member") == []
+    assert any("cannot act" in t for t in fake_bot.texts())
+
+
+async def test_demote_admin_target_allowed(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    """ADMIN_TARGET lets /demote act on an administrator the generic guard blocks."""
+    app = await _app(fake_bot, db, fake_clock)
+    caller = Subject(ADMIN_ID, Role.ADMIN, Right.PROMOTE)
+    admins = {
+        **_BOT_PROMOTE_ADMINS,
+        TARGET_ID: Subject(TARGET_ID, Role.ADMIN, Right.RESTRICT),
+    }
+    await _dispatch(
+        app, _message(f"/demote {TARGET_ID}", user_id=ADMIN_ID), caller=caller, admins=admins
+    )
+    assert fake_bot.called("promote_chat_member")
+
+
+async def test_demote_owner_target_refused(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    app = await _app(fake_bot, db, fake_clock)
+    caller = Subject(ADMIN_ID, Role.ADMIN, Right.PROMOTE)
+    admins = {**_BOT_PROMOTE_ADMINS, TARGET_ID: Subject(TARGET_ID, Role.OWNER)}
+    await _dispatch(
+        app, _message(f"/demote {TARGET_ID}", user_id=ADMIN_ID), caller=caller, admins=admins
+    )
+    assert fake_bot.called("promote_chat_member") == []
+    assert any("owner" in t for t in fake_bot.texts())
+
+
+async def test_promote_requires_target(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    app = await _app(fake_bot, db, fake_clock)
+    caller = Subject(ADMIN_ID, Role.ADMIN, Right.PROMOTE)
+    await _dispatch(
+        app, _message("/promote", user_id=ADMIN_ID), caller=caller, admins=_BOT_PROMOTE_ADMINS
+    )
+    assert fake_bot.called("promote_chat_member") == []
+    assert any("Reply to a user" in t for t in fake_bot.texts())
+
+
+async def test_start_works_in_private_chat(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    """The only command that works in a private chat besides /help."""
+    app = await _app(fake_bot, db, fake_clock)
+    private_chat = Chat(id=1, type="private")
+    msg = Message(
+        message_id=1,
+        date=0,
+        chat=private_chat,
+        from_user=User(id=ADMIN_ID, is_bot=False, first_name="A"),
+        text="/start",
+    ).as_(app.bot)
+    caller = Subject(ADMIN_ID, Role.ANYONE)
+    await MessageHandler(app).handle(
+        msg, caller=caller, admins={}, settings=await app.settings.get(1)
+    )
+    assert any("Available commands" in t for t in fake_bot.texts())
+
+
+async def test_promote_group_only_in_private(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    app = await _app(fake_bot, db, fake_clock)
+    private_chat = Chat(id=1, type="private")
+    msg = Message(
+        message_id=1,
+        date=0,
+        chat=private_chat,
+        from_user=User(id=ADMIN_ID, is_bot=False, first_name="A"),
+        text=f"/promote {TARGET_ID}",
+    ).as_(app.bot)
+    caller = Subject(ADMIN_ID, Role.ADMIN, Right.PROMOTE)
+    await MessageHandler(app).handle(
+        msg, caller=caller, admins=_BOT_PROMOTE_ADMINS, settings=await app.settings.get(1)
+    )
+    assert fake_bot.called("promote_chat_member") == []
+    assert any("only available in groups" in t for t in fake_bot.texts())

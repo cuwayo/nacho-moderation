@@ -265,8 +265,12 @@ class MessageHandler:
             await message.reply(_UNKNOWN_USERNAME)
             return
 
+        # The generic guard protects the owner, other admins, and the bot. A
+        # command flagged ADMIN_TARGET (/demote) does its own, narrower guard
+        # because it must be allowed to act on an administrator.
         if (
             wants_target
+            and CommandFlag.ADMIN_TARGET not in spec.flags
             and target_id is not None
             and target_is_protected(target_id, admins, app.bot_id)
         ):
@@ -286,6 +290,8 @@ class MessageHandler:
             target_label=_target_label(message),
             bot_username=app.bot_username,
             is_group=is_group,
+            bot_id=app.bot_id,
+            admins=admins,
             invalidate_admins=app.admins.invalidate,
             automod=app.automod,
             log_chat_id=settings.log_chat_id,

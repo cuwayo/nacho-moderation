@@ -14,6 +14,7 @@ An **asyncio Telegram admin/moderator bot** written in **Python 3.12**, built on
 
 - Moderation commands: `/ban`, `/unban`, `/kick`, `/mute`, `/unmute`, `/del`,
   `/pin`, `/unpin`, `/purge`, with `30s`/`10m`/`2h`/`7d`/`1w` durations.
+- Administrator management: `/promote` (limited rights only) and `/demote`.
 - Warnings: `/warn`, `/unwarn`, `/warns`, `/resetwarns`, with a per-chat limit and
   auto-action (`ban`/`mute`/`kick`).
 - Per-chat settings: `/setwarnlimit`, `/setwarnaction`, `/setlog`, `/reload`, and
@@ -94,8 +95,9 @@ See [`docs/commands.md`](docs/commands.md) for the full reference.
 
 | Command | Role | Description |
 | --- | --- | --- |
-| `/help` | anyone | Show available commands. |
+| `/help` `/start` | anyone | Show available commands. |
 | `/ban` `/unban` `/kick` `/mute` `/unmute` | admin | Moderation. |
+| `/promote` `/demote` | admin | Grant/remove limited admin rights. |
 | `/del` `/pin` `/unpin` `/purge` | admin | Message management. |
 | `/warn` `/unwarn` `/warns` `/resetwarns` | admin / anyone | Warnings. |
 | `/settings` `/setwelcome` `/welcome` `/setrules` `/rules` `/reload` | admin | Settings. |

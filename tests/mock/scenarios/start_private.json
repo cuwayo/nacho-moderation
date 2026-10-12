@@ -1,0 +1,18 @@
+{
+  "_comment": "A plain member (id 300) sends /start in a private chat. /start is available to anyone and works in private chats; the bot replies with the help text via sendMessage and issues no moderation call.",
+  "updates": [
+    [
+      {
+        "update_id": 1,
+        "message": {
+          "message_id": 1,
+          "date": 1700000000,
+          "from": {"id": 300, "is_bot": false, "first_name": "Member", "username": "member"},
+          "chat": {"id": 300, "type": "private", "first_name": "Member"},
+          "text": "/start"
+        }
+      }
+    ],
+    []
+  ]
+}

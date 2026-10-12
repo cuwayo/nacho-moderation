@@ -51,6 +51,7 @@ class CommandFlag(IntFlag):
     REASON = 1 << 3  # accepts a free-text reason
     GROUP_ONLY = 1 << 4  # unavailable in private chats
     HIDDEN = 1 << 5  # omitted from /help and setMyCommands
+    ADMIN_TARGET = 1 << 6  # the target may be an administrator (own guards)
 
 
 # --- Message locks ---------------------------------------------------------
@@ -114,5 +115,6 @@ BACKOFF_SCHEDULE_SECONDS = (1, 2, 4, 8, 16, 30)
 TELEGRAM_MAX_MESSAGE_LEN = 4096
 TELEGRAM_MAX_COMMAND_NAME_LEN = 32
 TELEGRAM_MAX_COMMAND_DESC_LEN = 256
+TELEGRAM_MAX_ADMIN_TITLE_LEN = 16
 DELETE_BATCH_SIZE = 100
 PURGE_MAX_IDS = 1000

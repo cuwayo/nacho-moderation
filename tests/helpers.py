@@ -92,6 +92,8 @@ def context(
     automod: Any = None,
     invalidate_admins: Any = None,
     log_chat_id: int = 0,
+    bot_id: int = 0,
+    admins: dict[int, Subject] | None = None,
 ) -> CommandContext:
     """Build a :class:`CommandContext` around fakes."""
     return CommandContext(
@@ -107,6 +109,8 @@ def context(
         target_label=target_label,
         bot_username="mock_bot",
         is_group=is_group,
+        bot_id=bot_id,
+        admins=admins,
         invalidate_admins=invalidate_admins,
         automod=automod,
         log_chat_id=log_chat_id,

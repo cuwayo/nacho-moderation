@@ -47,6 +47,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`/promote`, `/demote` and `/start`.** The three commands present in the
+  original command table but never ported. `/promote` grants only a limited,
+  safe set of rights (delete messages, restrict members, pin messages) and never
+  `can_promote_members`/`can_change_info`/`can_manage_chat`, with an optional
+  custom title (16 characters, HTML-escaped when echoed). `/demote` clears every
+  right and refuses the owner, the bot itself, and (via Telegram's own rejection)
+  an administrator the bot did not promote. `/start` replies with the same text
+  as `/help` and is the only command besides `/help` that works in private chats.
+  The registry now holds 31 commands.
+
 - Feature-parity port of the C bot:
   - 28 commands across moderation, warnings, per-chat settings, welcome/rules,
     and automod, driven by a single command registry that produces both `/help`

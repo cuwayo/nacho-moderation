@@ -18,6 +18,8 @@ action is permanent. Trailing free text is the reason.
 | `/kick` | `[target] [reason]` | admin | Remove a user so they can rejoin. |
 | `/mute` | `[target] [duration] [reason]` | admin | Restrict a user from sending. |
 | `/unmute` | `[target]` | admin | Restore a user's permissions. |
+| `/promote` | `[target] [title]` | admin | Grant limited moderator rights (delete, restrict, pin) with an optional title. |
+| `/demote` | `[target]` | admin | Remove administrator rights. |
 | `/del` | *(reply)* | admin | Delete the replied-to message and the command. |
 | `/pin` | *(reply)* | admin | Pin the replied-to message. |
 | `/unpin` | | admin | Unpin the last pinned message. |
@@ -64,10 +66,25 @@ Lock types: `links`, `media`, `stickers`, `forwards`, `polls`, `invites`, `bots`
 | Command | Role | Description |
 | --- | --- | --- |
 | `/help` | anyone | Show available commands. |
+| `/start` | anyone | Show available commands (the only command that works in private chats besides `/help`). |
+
+## Promoting and demoting
+
+`/promote` grants only a limited, explicitly safe set of rights: delete messages,
+restrict members, and pin messages. It never grants `can_promote_members`,
+`can_change_info`, or `can_manage_chat`. The caller needs `can_promote_members`,
+and so does the bot. An optional custom title is trimmed to Telegram's limit of
+16 characters and HTML-escaped when echoed back.
+
+`/demote` clears every administrator right. It refuses the chat owner and the bot
+itself, and Telegram rejects an administrator the bot did not promote — that
+rejection is reported with a clear message and never retried.
 
 ## Edge cases
 
 - The owner, other administrators, and the bot itself cannot be acted upon.
+- `/demote` is the one exception: it may act on an administrator (but still never
+  on the owner or the bot), because removing admin rights is its purpose.
 - A non-administrator cannot run an admin command; the bot replies clearly when
   it lacks the required right.
 - A temporary ban or mute survives a restart and is lifted by the sweeper.

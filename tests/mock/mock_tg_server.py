@@ -49,6 +49,8 @@ HANDLERS = [
     "banChatMember",
     "unbanChatMember",
     "restrictChatMember",
+    "promoteChatMember",
+    "setChatAdministratorCustomTitle",
     "deleteMessage",
     "deleteMessages",
     "pinChatMessage",
@@ -125,6 +127,9 @@ class MockState:
         self.scripted: list[dict] = []
         self.faults: dict[str, list[dict]] = {}
         self.recorded: list[dict] = []
+        # Administrator list returned by getChatAdministrators; a scenario may
+        # override it to grant the bot (or a caller) promote rights.
+        self.admins: list[dict] = DEFAULT_ADMINS
         # Soak mode: a background thread feeds synthetic updates at a target rate.
         self.soak = False
         self.soak_rate = 1000
@@ -311,12 +316,14 @@ class Handler(BaseHTTPRequestHandler):
         elif api_method == "getUpdates":
             self._send_json(200, state.next_update_batch())
         elif api_method == "getChatAdministrators":
-            self._send_json(200, {"ok": True, "result": DEFAULT_ADMINS})
+            self._send_json(200, {"ok": True, "result": state.admins})
         elif api_method == "sendMessage":
             self._send_json(200, {"ok": True, "result": _mock_message(body)})
         elif (
             api_method == "setMyCommands"
             or api_method in ("banChatMember", "unbanChatMember", "restrictChatMember")
+            or api_method == "promoteChatMember"
+            or api_method == "setChatAdministratorCustomTitle"
             or api_method == "deleteMessage"
             or api_method == "deleteMessages"
             or api_method in ("pinChatMessage", "unpinChatMessage")
@@ -348,6 +355,8 @@ def load_scenario(path: str, state: MockState) -> None:
         scenario = json.load(fh)
     state.scripted = list(scenario.get("updates", []))
     state.faults = {m: list(v) for m, v in scenario.get("faults", {}).items()}
+    if "admins" in scenario:
+        state.admins = list(scenario["admins"])
 
 
 def main() -> int:

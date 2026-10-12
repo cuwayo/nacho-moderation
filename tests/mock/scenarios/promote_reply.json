@@ -1,0 +1,77 @@
+{
+  "_comment": "An admin (id 200) with can_promote_members runs /promote on the replied-to user with a custom title. The bot (123456789) also holds can_promote_members. The bot must issue promoteChatMember with only the limited rights (delete/restrict/pin, everything else false) and then setChatAdministratorCustomTitle.",
+  "admins": [
+    {
+      "status": "creator",
+      "user": {"id": 100, "is_bot": false, "first_name": "Owner", "username": "owner"},
+      "is_anonymous": false
+    },
+    {
+      "status": "administrator",
+      "user": {"id": 200, "is_bot": false, "first_name": "Admin", "username": "admin"},
+      "can_be_edited": false,
+      "is_anonymous": false,
+      "can_manage_chat": true,
+      "can_delete_messages": true,
+      "can_manage_video_chats": true,
+      "can_restrict_members": true,
+      "can_promote_members": true,
+      "can_change_info": true,
+      "can_invite_users": true,
+      "can_post_stories": false,
+      "can_edit_stories": false,
+      "can_delete_stories": false,
+      "can_send_welcome_messages": false,
+      "can_pin_messages": true
+    },
+    {
+      "status": "administrator",
+      "user": {"id": 123456789, "is_bot": true, "first_name": "Mock Bot"},
+      "can_be_edited": false,
+      "is_anonymous": false,
+      "can_manage_chat": true,
+      "can_delete_messages": true,
+      "can_manage_video_chats": true,
+      "can_restrict_members": true,
+      "can_promote_members": true,
+      "can_change_info": true,
+      "can_invite_users": true,
+      "can_post_stories": false,
+      "can_edit_stories": false,
+      "can_delete_stories": false,
+      "can_send_welcome_messages": false,
+      "can_pin_messages": true
+    }
+  ],
+  "updates": [
+    [
+      {
+        "update_id": 1,
+        "message": {
+          "message_id": 10,
+          "date": 1700000000,
+          "from": {"id": 300, "is_bot": false, "first_name": "Member", "username": "member"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "hello"
+        }
+      },
+      {
+        "update_id": 2,
+        "message": {
+          "message_id": 11,
+          "date": 1700000000,
+          "from": {"id": 200, "is_bot": false, "first_name": "Admin", "username": "admin"},
+          "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+          "text": "/promote Moderator",
+          "reply_to_message": {
+            "message_id": 10,
+            "date": 1700000000,
+            "chat": {"id": -1001234567890, "type": "supergroup", "title": "Testers"},
+            "from": {"id": 300, "is_bot": false, "first_name": "Member", "username": "member"}
+          }
+        }
+      }
+    ],
+    []
+  ]
+}

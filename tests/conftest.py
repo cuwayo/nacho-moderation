@@ -101,6 +101,7 @@ class FakeBot:
     member_count: int = 42
     chat_title: str = "Testers"
     fail: set[str] = field(default_factory=set)
+    error: BaseException | None = None
 
     async def __call__(self, method: Any) -> Any:
         """Handle the callable form ``bot(TelegramMethod)``."""
@@ -111,6 +112,8 @@ class FakeBot:
 
     async def _record(self, name: str, **kwargs: Any) -> Any:
         if name in self.fail:
+            if self.error is not None:
+                raise self.error
             raise RuntimeError(f"injected failure in {name}")
         self.calls.append(Call(name, kwargs))
         if name in ("send_message", "edit_message_text"):
@@ -138,6 +141,15 @@ class FakeBot:
 
     async def restrict_chat_member(self, **kwargs: Any) -> Any:
         return await self._record("restrict_chat_member", **kwargs)
+
+    async def promote_chat_member(self, **kwargs: Any) -> Any:
+        return await self._record("promote_chat_member", **kwargs)
+
+    async def set_chat_administrator_custom_title(self, **kwargs: Any) -> Any:
+        return await self._record("set_chat_administrator_custom_title", **kwargs)
+
+    async def get_chat_member(self, **kwargs: Any) -> Any:
+        return await self._record("get_chat_member", **kwargs)
 
     async def pin_chat_message(self, **kwargs: Any) -> Any:
         return await self._record("pin_chat_message", **kwargs)

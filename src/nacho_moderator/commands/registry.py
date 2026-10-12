@@ -46,7 +46,14 @@ class CommandSpec:
 
 def _build_registry() -> list[CommandSpec]:
     # Imported here to avoid a circular import at module load time.
-    from nacho_moderator.commands import automod_cmds, help_cmd, moderation, settings_cmds, warns
+    from nacho_moderator.commands import (
+        automod_cmds,
+        help_cmd,
+        moderation,
+        promote,
+        settings_cmds,
+        warns,
+    )
 
     return [
         CommandSpec(
@@ -59,6 +66,17 @@ def _build_registry() -> list[CommandSpec]:
             "",
             "Show available commands",
             help_cmd.cmd_help,
+        ),
+        CommandSpec(
+            "start",
+            "start",
+            Role.ANYONE,
+            Right.NONE,
+            Right.NONE,
+            CommandFlag.NONE,
+            "",
+            "Show available commands",
+            help_cmd.cmd_start,
         ),
         CommandSpec(
             "ban",
@@ -114,6 +132,28 @@ def _build_registry() -> list[CommandSpec]:
             "[target]",
             "Restore a user's permissions",
             moderation.cmd_unmute,
+        ),
+        CommandSpec(
+            "promote",
+            "promote",
+            Role.ADMIN,
+            Right.PROMOTE,
+            Right.PROMOTE,
+            CommandFlag.TARGET | CommandFlag.REASON | CommandFlag.GROUP_ONLY,
+            "[target] [title]",
+            "Grant limited moderator rights",
+            promote.cmd_promote,
+        ),
+        CommandSpec(
+            "demote",
+            "demote",
+            Role.ADMIN,
+            Right.PROMOTE,
+            Right.PROMOTE,
+            CommandFlag.TARGET | CommandFlag.ADMIN_TARGET | CommandFlag.GROUP_ONLY,
+            "[target]",
+            "Remove administrator rights",
+            promote.cmd_demote,
         ),
         CommandSpec(
             "del",
