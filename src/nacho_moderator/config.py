@@ -68,6 +68,62 @@ class LogLevelName(StrEnum):
     DEBUG = "debug"
 
 
+#: Highest valid TCP port.
+MAX_PORT = 65535
+
+
+def parse_listen(value: str) -> tuple[str, int]:
+    """Parse a ``host:port`` listen address into ``(host, port)``.
+
+    Both an IPv4/hostname form (``127.0.0.1:8080``, ``example.com:8080``,
+    ``0.0.0.0:8080``) and a bracketed IPv6 form (``[::1]:8080``, ``[::]:8080``)
+    are accepted; the returned host is *unbracketed*, so it can be handed
+    straight to ``aiohttp`` to bind. An unbracketed IPv6 address is rejected as
+    ambiguous, a bare port (``8080``) is rejected, the host must not be empty,
+    and the port must be in ``1..65535``.
+
+    Args:
+        value: The raw ``webhook.listen`` string.
+
+    Returns:
+        A ``(host, port)`` tuple.
+
+    Raises:
+        ValueError: If the address is malformed (with a message naming the fix).
+    """
+    text = value.strip()
+    if not text:
+        raise ValueError("webhook.listen must not be empty; use host:port, e.g. 127.0.0.1:8080")
+    if text.startswith("["):
+        end = text.find("]")
+        if end == -1:
+            raise ValueError(f"invalid webhook.listen {value!r}: missing closing ']'")
+        host = text[1:end]
+        rest = text[end + 1 :]
+        if not rest.startswith(":"):
+            raise ValueError(f"invalid webhook.listen {value!r}: expected [host]:port")
+        port_text = rest[1:]
+    else:
+        host, sep, port_text = text.rpartition(":")
+        if not sep:
+            raise ValueError(
+                f"invalid webhook.listen {value!r}: expected host:port "
+                "(a bare port is not enough), e.g. 127.0.0.1:8080"
+            )
+        if ":" in host:
+            raise ValueError(
+                f"invalid webhook.listen {value!r}: bracket IPv6 addresses, e.g. [::1]:8080"
+            )
+    if not host:
+        raise ValueError(f"invalid webhook.listen {value!r}: host must not be empty")
+    if not port_text.isdigit():
+        raise ValueError(f"invalid webhook.listen {value!r}: port must be a number")
+    port = int(port_text)
+    if not 1 <= port <= MAX_PORT:
+        raise ValueError(f"invalid webhook.listen {value!r}: port must be 1-{MAX_PORT}")
+    return host, port
+
+
 class WebhookSettings(_MaskedReprModel):
     """Webhook-mode settings."""
 
@@ -76,15 +132,22 @@ class WebhookSettings(_MaskedReprModel):
     listen: str = "127.0.0.1:8080"
     secret: str = ""
 
+    @field_validator("listen")
+    @classmethod
+    def _validate_listen(cls, value: str) -> str:
+        """Reject a malformed listen address at config-load time."""
+        parse_listen(value)
+        return value
+
     @property
     def host(self) -> str:
-        """Return the listen host part."""
-        return self.listen.rsplit(":", 1)[0]
+        """Return the listen host, unbracketed for IPv6."""
+        return parse_listen(self.listen)[0]
 
     @property
     def port(self) -> int:
-        """Return the listen port part."""
-        return int(self.listen.rsplit(":", 1)[1])
+        """Return the listen port."""
+        return parse_listen(self.listen)[1]
 
 
 class DbSettings(BaseModel):

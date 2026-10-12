@@ -18,7 +18,7 @@ rejected.
 | `bot_token` | `BOT_TOKEN` | string | *(required)* | Telegram bot token issued by BotFather. Never logged. |
 | `mode` | `MODE` | enum | `polling` | Update source: `polling` or `webhook`. |
 | `sudo_ids` | `SUDO_IDS` | int list | *(empty)* | Comma-separated user ids granted bot-level sudo. |
-| `webhook.listen` | `WEBHOOK_LISTEN` | string | `127.0.0.1:8080` | Webhook listen address behind a reverse proxy. |
+| `webhook.listen` | `WEBHOOK_LISTEN` | string | `127.0.0.1:8080` | Webhook listen address behind a reverse proxy; `host:port` or `[v6]:port`. |
 | `webhook.secret` | `WEBHOOK_SECRET` | string | *(required in webhook mode)* | `X-Telegram-Bot-Api-Secret-Token` value; at least 16 characters. |
 | `db.path` | `DB_PATH` | string | `./bot.db` | SQLite database file path. |
 | `api.pool_size` | `API_POOL_SIZE` | int | `4` | Keep-alive connections to the Bot API. |
@@ -34,6 +34,10 @@ rejected.
   bot refuses to start otherwise.
 - `api.pool_size` must be at least 1, `polling.timeout` non-negative, and
   `api.request_timeout_ms` positive.
+- `webhook.listen` must be `host:port` or `[ipv6]:port`; a bare port, an empty
+  host, an unbracketed IPv6 address, and a port outside `1-65535` are rejected at
+  config-load time. The host is stored unbracketed, so `[::1]:8080` yields the
+  host `::1` for `aiohttp` to bind. Hostnames and `0.0.0.0`/`::` are accepted.
 - If the config file contains a secret (`bot_token` or `webhook.secret`) and its
   mode has any group or other bit set (`mode & 0o077`), the bot refuses to start
   and tells you to `chmod 600` the file. The check resolves symlinks first, so a
@@ -80,6 +84,13 @@ mode = "webhook"
 [webhook]
 listen = "127.0.0.1:8080"
 secret = "a-long-random-token-at-least-16-chars"
+```
+
+For IPv6, bracket the address so the port is unambiguous:
+
+```toml
+[webhook]
+listen = "[::1]:8080"
 ```
 
 The secret authenticates inbound updates; without it anyone reaching the port

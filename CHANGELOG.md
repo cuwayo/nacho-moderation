@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `x {'a': 1}`: the old redacting filter iterated the mapping's keys.
   Redaction no longer mutates `record.msg`/`record.args`, so mapping and tuple
   arguments are formatted correctly.
+- `webhook.listen = "[::1]:8080"` produced the host `[::1]`, which `aiohttp`
+  cannot bind. The address is now parsed by a tested `parse_listen()` that
+  returns the unbracketed host and validates the port at config-load time, so
+  `--check-config` catches a malformed address. A bare port, an empty host, an
+  unbracketed IPv6 address, and a port outside `1-65535` are rejected.
 
 ### Changed
 

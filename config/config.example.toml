@@ -13,7 +13,8 @@ sudo_ids = ""
 
 [webhook]
 
-# Webhook listen address behind a TLS-terminating reverse proxy.
+# Webhook listen address behind a TLS-terminating reverse proxy. Use host:port,
+# or [ipv6]:port for an IPv6 address (e.g. "[::1]:8080").
 listen = "127.0.0.1:8080"
 
 # X-Telegram-Bot-Api-Secret-Token value verified on inbound webhook requests.
