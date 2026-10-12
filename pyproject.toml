@@ -19,7 +19,7 @@ nacho-moderator = "nacho_moderator.main:main"
 Repository = "https://github.com/cuwayo/nacho-moderation"
 
 [build-system]
-requires = ["uv_build>=0.12.13,<0.13.0"]
+requires = ["uv_build>=0.12.13,<0.14.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
