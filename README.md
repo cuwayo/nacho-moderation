@@ -78,6 +78,11 @@ In containers or CI, where a baked-in config file is often world-readable, pass
 `--allow-insecure-config` (or set `ALLOW_INSECURE_CONFIG=1`) to skip the
 permission check. See [`docs/configuration.md`](docs/configuration.md).
 
+Validate a config without starting the bot with
+`nacho-moderator --check-config config.toml`; `--log-level` overrides the
+configured verbosity and `--version` prints the version. Run
+`nacho-moderator --help` for the full CLI reference.
+
 Add the bot to a group, grant it the administrator rights you want it to use, and
 verify with `/help`.
 
@@ -105,6 +110,7 @@ See [`docs/commands.md`](docs/commands.md) for the full reference.
 | `/promote` `/demote` | admin | Grant/remove limited admin rights. |
 | `/del` `/pin` `/unpin` `/purge` | admin | Message management. |
 | `/warn` `/unwarn` `/warns` `/resetwarns` | admin / anyone | Warnings. |
+| `/setwarnlimit` `/setwarnaction` | admin | Warning policy. |
 | `/settings` `/setwelcome` `/welcome` `/setrules` `/rules` `/reload` | admin | Settings. |
 | `/setlog` | owner | Moderation log channel. |
 | `/lock` `/unlock` `/blacklist` `/antiflood` `/captcha` | admin | Automod. |

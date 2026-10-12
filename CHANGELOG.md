@@ -73,6 +73,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Docs consistency checks.** `tests/test_docs_consistency.py` runs in the
+  normal suite and fails when the prose drifts from the single sources of truth:
+  every registered command has a `### /<name>` section in `docs/commands.md`
+  with Examples and Edge cases; the README command table matches the registry;
+  every `Settings` key is documented and `config/config.example.toml` validates
+  with placeholder secrets; `nacho-moderator --help` equals the golden
+  `docs/cli-help.txt`; `setMyCommands` obeys Telegram's limits and the group
+  scope is a subset of the admin scope; every TOML and `title="ci"` snippet is
+  valid; no bare TODO/FIXME; markdown tables are consistent; relative links
+  resolve; and (in CI) the CHANGELOG changed when `src/` changed. Each check has
+  a fixture test for its failure mode. `docs/commands.md` is restructured into
+  one section per command.
+
 - **`/promote`, `/demote` and `/start`.** The three commands present in the
   original command table but never ported. `/promote` grants only a limited,
   safe set of rights (delete messages, restrict members, pin messages) and never

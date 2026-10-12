@@ -1,0 +1,18 @@
+usage: nacho-moderator [-h] [--config CONFIG] [--check-config CHECK_CONFIG]
+                       [--allow-insecure-config]
+                       [--log-level {error,warn,info,debug}] [--version]
+
+An asyncio Telegram admin/moderator bot built with aiogram
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       path to config.toml (default: ./config.toml)
+  --check-config CHECK_CONFIG
+                        validate a config file and exit
+  --allow-insecure-config
+                        start even if the config file holds a secret and is
+                        group/other accessible (for containers/CI; env
+                        ALLOW_INSECURE_CONFIG=1)
+  --log-level {error,warn,info,debug}
+                        override the log level
+  --version, -V         show version and exit

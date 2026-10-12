@@ -148,6 +148,10 @@ jobs:
       - name: Install
         run: uv sync --all-groups
       - name: docs-consistency (command registry, config keys, links, tables)
+        env:
+          # The CHANGELOG check compares against the PR base branch.
+          CI_BASE_REF: ${{ github.base_ref }}
+          SKIP_CHANGELOG: ${{ contains(github.event.pull_request.labels.*.name, 'skip-changelog') && '1' || '0' }}
         run: uv run pytest tests/test_docs_consistency.py -q
 
   docs-build:

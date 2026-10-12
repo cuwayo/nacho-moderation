@@ -70,6 +70,34 @@ tests/
 | Per-module coverage floors | `test_check_coverage.py` |
 | Docs consistency (P8) | `test_docs_consistency.py` |
 
+## Docs consistency
+
+`tests/test_docs_consistency.py` is part of the normal suite. It treats the
+command registry and the `Settings` model as the single sources of truth and
+fails when the prose docs drift from them:
+
+- every registered command has a `### /<name>` section in `docs/commands.md`
+  with **Examples** and **Edge cases**, and no section names an unregistered
+  command;
+- the README command table lists exactly the registry's commands;
+- every `Settings` key appears in `docs/configuration.md`, and
+  `config/config.example.toml` validates under `--check-config` with placeholder
+  secrets;
+- `nacho-moderator --help` equals the golden `docs/cli-help.txt` and the flags
+  are documented in the README;
+- `setMyCommands` payloads obey Telegram's limits and the group scope is a subset
+  of the admin scope;
+- every ```toml`` snippet validates and every ```bash title="ci"`` snippet
+  parses and references only existing scripts;
+- no bare `TODO`/`FIXME`, markdown tables have consistent cell counts, and
+  relative links resolve;
+- (CI only) the CHANGELOG `Unreleased` section changed when `src/` changed
+  (`skip-changelog` label bypasses it).
+
+Each check is a small pure function, and `TestFixtureChecks` exercises every
+failure mode against deliberately broken fixture text. Regenerate the golden
+`--help` with `uv run nacho-moderator --help > docs/cli-help.txt`.
+
 ## Mock Bot API server (manual / soak)
 
 `tests/mock/mock_tg_server.py` is a standalone plain-HTTP server that speaks
