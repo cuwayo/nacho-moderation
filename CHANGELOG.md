@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Redaction now covers every log path.** Log redaction moved from a record
+  filter to a custom `logging.Formatter` that rewrites the final rendered line,
+  so the bot token and webhook secret are masked when they are assembled at
+  render time (`.../bot<token>/getMe` with a `%s` argument), in tracebacks and
+  `exc_info`/`stack_info` text, and in the `aiogram`, `aiohttp`, and `asyncio`
+  loggers, which propagate to the root handler. Secrets are matched by exact
+  registered value (token, webhook secret, URL-quoted form, and the part after a
+  token's `:`) and by shape (`bot<digits>:<secret>` and bare `<digits>:<secret>`).
+  `Settings.__repr__`/`__str__` mask the token and secret, and a config
+  validation error no longer echoes the rejected value (which previously printed
+  the token to stderr).
+
+### Fixed
+
+- Logging a single mapping argument (`log.info("x %s", {"a": 1})`) printed `x a`
+  instead of `x {'a': 1}`: the old redacting filter iterated the mapping's keys.
+  Redaction no longer mutates `record.msg`/`record.args`, so mapping and tuple
+  arguments are formatted correctly.
+
 ### Changed
 
 - **Complete rewrite in Python 3.12 using `uv` and `aiogram 3`.** The bot is now

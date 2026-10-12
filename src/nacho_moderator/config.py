@@ -18,16 +18,37 @@ from __future__ import annotations
 import argparse
 import os
 import tomllib
+from collections.abc import Iterator
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from nacho_moderator.errors import ConfigError
 
 DEFAULT_CONFIG_PATH = Path("config.toml")
 WEBHOOK_SECRET_MIN_LEN = 16
+
+#: Replacement shown wherever a secret value would otherwise be printed.
+MASKED = "***"
+
+#: Keys whose values are secrets: never rendered, never echoed in an error.
+_SECRET_KEYS = frozenset({"bot_token", "secret"})
+
+
+class _MaskedReprModel(BaseModel):
+    """A pydantic model whose ``repr``/``str`` mask secret-valued fields.
+
+    Pydantic renders a model by iterating :meth:`__repr_args__`; masking the
+    secret keys there keeps a stray ``log.info("%s", settings)`` from leaking the
+    token or webhook secret.
+    """
+
+    def __repr_args__(self) -> Iterator[tuple[str | None, Any]]:
+        """Yield field pairs, masking the value of every secret key."""
+        for key, value in super().__repr_args__():
+            yield (key, MASKED if key in _SECRET_KEYS else value)
 
 
 class Mode(StrEnum):
@@ -46,7 +67,7 @@ class LogLevelName(StrEnum):
     DEBUG = "debug"
 
 
-class WebhookSettings(BaseModel):
+class WebhookSettings(_MaskedReprModel):
     """Webhook-mode settings."""
 
     model_config = ConfigDict(extra="forbid")
@@ -104,7 +125,7 @@ class LogSettings(BaseModel):
     level: LogLevelName = LogLevelName.INFO
 
 
-class Settings(BaseModel):
+class Settings(_MaskedReprModel):
     """The fully-resolved bot configuration."""
 
     model_config = ConfigDict(extra="forbid")
@@ -153,12 +174,12 @@ class Settings(BaseModel):
     def redacted(self) -> dict[str, Any]:
         """Return a log-safe view with secret values masked."""
         return {
-            "bot_token": "***" if self.bot_token else "",
+            "bot_token": MASKED if self.bot_token else "",
             "mode": self.mode.value,
             "sudo_ids": self.sudo_ids,
             "webhook": {
                 "listen": self.webhook.listen,
-                "secret": "***" if self.webhook.secret else "",
+                "secret": MASKED if self.webhook.secret else "",
             },
             "db": {"path": self.db.path},
             "api": {
@@ -169,6 +190,26 @@ class Settings(BaseModel):
             "polling": {"timeout": self.polling.timeout},
             "log": {"level": self.log.level.value},
         }
+
+
+def _safe_validation_message(exc: ValidationError) -> str:
+    """Render a validation error without echoing any input value.
+
+    Pydantic includes the offending input in its default message; for a secret
+    field that would print the token. ``include_input=False`` keeps the field
+    path and the reason while dropping the value.
+
+    Args:
+        exc: The pydantic validation error to render.
+
+    Returns:
+        A human-readable, secret-free description of the failure.
+    """
+    lines = [f"{len(exc.errors())} validation error(s) for Settings:"]
+    for error in exc.errors(include_url=False, include_input=False):
+        location = ".".join(str(part) for part in error["loc"]) or "<root>"
+        lines.append(f"  {location}: {error['msg']}")
+    return "\n".join(lines)
 
 
 # Environment variable name -> dotted config key. Flat and explicit on purpose.
@@ -245,8 +286,8 @@ def load_settings(
 
     try:
         return Settings.model_validate(merged)
-    except Exception as exc:  # pydantic ValidationError
-        raise ConfigError(str(exc)) from exc
+    except ValidationError as exc:
+        raise ConfigError(_safe_validation_message(exc)) from exc
 
 
 def parse_cli(argv: list[str] | None = None) -> tuple[argparse.Namespace, dict[str, Any]]:

@@ -35,7 +35,7 @@ from nacho_moderator.config import (
 from nacho_moderator.db import Database
 from nacho_moderator.errors import ConfigError
 from nacho_moderator.handlers import App, build_dispatcher
-from nacho_moderator.logging_setup import configure_logging, get_logger
+from nacho_moderator.logging_setup import configure_logging, get_logger, register_secret
 from nacho_moderator.services.automod import AutomodService
 from nacho_moderator.services.captcha import CaptchaService
 from nacho_moderator.services.expiry import CaptchaSweeper, ExpirySweeper
@@ -189,6 +189,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"nacho-moderator: error: {exc}", file=sys.stderr)
         return 1
 
+    # Register the configured secrets so the redacting formatter masks them
+    # wherever they appear, including values never seen by the token patterns.
+    register_secret(config.bot_token)
+    register_secret(config.webhook.secret)
     _log.debug("configuration: %s", config.redacted())
     try:
         return asyncio.run(run_bot(config))

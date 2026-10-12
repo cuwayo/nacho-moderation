@@ -24,7 +24,16 @@ In scope:
 
 ## Hardening notes
 
-- The token and webhook secret are redacted from logs and diagnostic output.
+- The token and webhook secret are redacted from logs and diagnostic output. The
+  redaction runs on the *final* rendered log line, so it also covers a URL
+  assembled with `%`-style arguments, the formatted exception and `stack_info`
+  text, and every logger that propagates to the root handler (`aiogram`,
+  `aiohttp`, `asyncio`). Registered values (the configured token and secret, the
+  URL-quoted form, and the part of a token after the `:`) are matched exactly,
+  and token-shaped strings (`bot<digits>:<secret>`, bare `<digits>:<secret>`) are
+  matched by pattern, so an unregistered token is caught too. `Settings` masks
+  its secrets in `repr`/`str`, and a failed config validation no longer echoes
+  the value it rejected.
 - Webhook updates are authenticated with a constant-time comparison of the
   `X-Telegram-Bot-Api-Secret-Token` header; a mismatch is rejected with 403, and
   the bot refuses to start in webhook mode without a secret of at least 16

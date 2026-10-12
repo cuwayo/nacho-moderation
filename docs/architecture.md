@@ -30,7 +30,7 @@ result back to the event loop, so the loop is never blocked.
 | Module | Responsibility |
 | --- | --- |
 | `config` | Load and validate `config.toml`, environment, and CLI overrides. |
-| `logging_setup` | Structured stderr logging with bot-token redaction. |
+| `logging_setup` | Structured stderr logging; redacts the token and secrets from the final rendered line. |
 | `clock` | Injectable wall-clock/monotonic clock and random source. |
 | `models` | Duration parsing, HTML escaping, target references. |
 | `db` | SQLite schema, migrations, and typed repositories. |
