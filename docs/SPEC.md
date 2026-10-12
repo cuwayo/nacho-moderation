@@ -1,7 +1,6 @@
 # SPEC: Telegram group admin/moderator bot (Python + asyncio + aiogram)
 
-- **Status:** Current. This supersedes the original C/`liburing` specification;
-  the C implementation is preserved at the `c-implementation-final` tag (see
+- **Status:** Current. This supersedes the original C specification (see
   [`adr/0001-python-asyncio-aiogram.md`](adr/0001-python-asyncio-aiogram.md)).
 - **Stack:** Python 3.12, `asyncio`, [aiogram 3](https://docs.aiogram.dev),
   `aiosqlite`, [`regex`](https://pypi.org/project/regex/), managed with `uv`.
@@ -302,7 +301,7 @@ Acceptance:
 
 ## 12. Historical milestones (C implementation)
 
-The C implementation was built in milestones M0–M7 (io_uring loop; HTTP client
+The C implementation was built in milestones M0–M7 (async event loop; HTTP client
 and polling; update parsing, router, DB worker, permissions; moderation commands;
 warns/settings/welcome; automod and captcha; webhook, shutdown, packaging). Those
 milestones are retained in git history and in the `c-implementation-final` tag;

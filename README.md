@@ -67,9 +67,9 @@ dispatch. All outbound calls go through a session middleware that enforces the
 Bot API rate limits and retry policy. See [`docs/SPEC.md`](docs/SPEC.md) and
 [`docs/architecture.md`](docs/architecture.md).
 
-The bot was originally written in C11 on `io_uring`; that implementation is
-preserved at the `c-implementation-final` git tag and superseded by this Python
-port. See [`docs/adr/0001-python-asyncio-aiogram.md`](docs/adr/0001-python-asyncio-aiogram.md).
+The bot was originally written in C11; that implementation is preserved at the
+`c-implementation-final` git tag and superseded by this Python port. See
+[`docs/adr/0001-python-asyncio-aiogram.md`](docs/adr/0001-python-asyncio-aiogram.md).
 
 ## Requirements
 
