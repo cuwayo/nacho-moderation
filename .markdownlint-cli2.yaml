@@ -1,0 +1,9 @@
+# markdownlint-cli2 configuration.
+#
+# `config` points at the rule set; `ignores` keeps third-party READMEs that land
+# in the virtualenv out of the scan so `markdownlint-cli2 "**/*.md"` matches CI.
+config: ".markdownlint.yaml"
+ignores:
+  - ".venv/**"
+  - "build/**"
+  - "node_modules/**"

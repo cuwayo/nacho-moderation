@@ -41,6 +41,37 @@ async def test_connect_to_bad_path_raises(tmp_path: Path) -> None:
         await Database.connect(str(bad))
 
 
+async def test_failed_migration_closes_the_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A setup failure must not leak the aiosqlite connection or its thread."""
+    import aiosqlite
+
+    opened: list[aiosqlite.Connection] = []
+    real_connect = aiosqlite.connect
+
+    async def tracking_connect(*args, **kwargs):
+        conn = await real_connect(*args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    original = Database._migrate
+
+    async def failing_migrate(self: Database) -> None:
+        await original(self)
+        raise RuntimeError("migration failed")
+
+    monkeypatch.setattr(aiosqlite, "connect", tracking_connect)
+    monkeypatch.setattr(Database, "_migrate", failing_migrate)
+    with pytest.raises(RuntimeError):
+        await Database.connect(str(tmp_path / "bot.db"))
+
+    assert opened, "the connection was opened"
+    # A closed aiosqlite connection rejects further use ("no active connection").
+    with pytest.raises(ValueError, match="no active connection"):
+        await opened[0].execute("SELECT 1")
+
+
 async def test_upsert_chat_stores_title_and_type(db: Database) -> None:
     await db.upsert_chat(-100, "Testers", "supergroup")
     settings = await db.get_settings(-100)

@@ -143,6 +143,11 @@ asyncio_mode = "auto"
 # Pin the fixture loop scope so pytest-asyncio does not warn (which -W error
 # would turn into an error under the asyncio-debug CI run).
 asyncio_default_fixture_loop_scope = "function"
+# Run every async test on one loop for the whole session. Production runs a
+# single long-lived loop (`asyncio.run`), and a per-test loop close races
+# aiosqlite's worker thread, which then calls `call_soon_threadsafe` on the
+# closed loop and raises an unhandled-thread warning.
+asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 addopts = "-q"
 pythonpath = ["."]

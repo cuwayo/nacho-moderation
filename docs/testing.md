@@ -13,11 +13,13 @@ uv run pytest --cov           # with a coverage report (global floor 90%)
 uv run pytest tests/unit/test_cmd_moderation.py -v
 ```
 
-The suite runs under **`pytest-asyncio`** (auto mode), **`pytest-randomly`**
-(each run shuffles test order and seeds `hypothesis`; pass `-p no:randomly` for a
-deterministic order), **`pytest-timeout`** (a hung test fails after 30 s), and
-optionally **`pytest-xdist`** (`-n auto`). Property tests use **`hypothesis`**;
-the injectable clock is used instead of `freezegun`.
+The suite runs under **`pytest-asyncio`** (auto mode, one session-scoped event
+loop — matching production's single long-lived loop and avoiding an aiosqlite
+worker-thread teardown race), **`pytest-randomly`** (each run shuffles test order
+and seeds `hypothesis`; pass `-p no:randomly` for a deterministic order),
+**`pytest-timeout`** (a hung test fails after 30 s), and optionally
+**`pytest-xdist`** (`-n auto`). Property tests use **`hypothesis`**; the
+injectable clock is used instead of `freezegun`.
 
 The whole suite also passes with asyncio's debug mode on, which is what CI runs:
 
@@ -87,8 +89,8 @@ fails when the prose docs drift from them:
   are documented in the README;
 - `setMyCommands` payloads obey Telegram's limits and the group scope is a subset
   of the admin scope;
-- every ```toml`` snippet validates and every ```bash title="ci"`` snippet
-  parses and references only existing scripts;
+- every TOML snippet validates and every `title="ci"` bash snippet parses and
+  references only existing scripts;
 - no bare `TODO`/`FIXME`, markdown tables have consistent cell counts, and
   relative links resolve;
 - (CI only) the CHANGELOG `Unreleased` section changed when `src/` changed

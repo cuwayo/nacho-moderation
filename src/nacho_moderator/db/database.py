@@ -102,7 +102,19 @@ class Database:
 
     @classmethod
     async def connect(cls, path: str) -> Database:
-        """Open (creating if needed) the database at ``path`` and migrate it."""
+        """Open (creating if needed) the database at ``path`` and migrate it.
+
+        Args:
+            path: The SQLite file path, or ``:memory:`` for an in-memory database.
+
+        Returns:
+            A connected, migrated :class:`Database`.
+
+        Raises:
+            DatabaseError: If the database cannot be opened or prepared. The
+                connection is closed before the error propagates, so no
+                aiosqlite worker thread is left behind.
+        """
         if path != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -111,8 +123,13 @@ class Database:
             raise DatabaseError(f"cannot open database {path}: {exc}") from exc
         conn.row_factory = aiosqlite.Row
         db = cls(conn)
-        await db._apply_pragmas()
-        await db._migrate()
+        try:
+            await db._apply_pragmas()
+            await db._migrate()
+        except Exception:
+            # Do not leak the connection (and its worker thread) on a failed setup.
+            await conn.close()
+            raise
         return db
 
     async def close(self) -> None:

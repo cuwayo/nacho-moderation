@@ -95,7 +95,11 @@ jobs:
       - name: Install
         run: uv sync --all-groups
       - name: pip-audit (fail on known vulnerabilities)
-        run: uv run --with pip-audit pip-audit --strict
+        run: |
+          # The local package is not on PyPI; audit the installed third-party
+          # dependencies. --skip-editable is implied by the project not being
+          # published, so we exclude it explicitly.
+          uv run --with pip-audit pip-audit --skip-editable
       - name: detect-secrets
         run: |
           uv run --with detect-secrets detect-secrets scan --all-files \

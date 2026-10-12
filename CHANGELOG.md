@@ -38,6 +38,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns the unbracketed host and validates the port at config-load time, so
   `--check-config` catches a malformed address. A bare port, an empty host, an
   unbracketed IPv6 address, and a port outside `1-65535` are rejected.
+- `Database.connect` leaked the aiosqlite connection (and its worker thread) if
+  applying the pragmas or the migration failed after the connection opened. The
+  connection is now closed before the error propagates.
+- An intermittent `PytestUnhandledThreadExceptionWarning` under `pytest-randomly`
+  (an aiosqlite worker thread calling back into a closed per-test event loop).
+  The test suite now runs all async tests on one session-scoped loop, matching
+  production's single long-lived loop.
 
 ### Changed
 
