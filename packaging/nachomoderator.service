@@ -1,12 +1,14 @@
 [Unit]
 Description=nacho-moderator Telegram admin bot
-Documentation=man:tgbot(1) man:tgbot.toml(5)
+Documentation=https://github.com/cuwayo/nacho-moderation
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/tgbot --config /etc/nachomoderator/config.toml
+# Adjust the working directory / interpreter to your installation.
+WorkingDirectory=/var/lib/nachomoderator
+ExecStart=/usr/local/bin/nacho-moderator --config /etc/nachomoderator/config.toml
 Restart=on-failure
 RestartSec=5s
 
@@ -15,7 +17,7 @@ RestartSec=5s
 User=nachomoderator
 Group=nachomoderator
 
-# --- Hardening (SPEC-ADDENDUM-TOOLCHAIN A8) --------------------------------
+# --- Hardening -------------------------------------------------------------
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -27,7 +29,6 @@ ProtectControlGroups=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictNamespaces=yes
 LockPersonality=yes
-MemoryDenyWriteExecute=yes
 RemoveIPC=yes
 UMask=0077
 
@@ -36,15 +37,8 @@ ReadWritePaths=/var/lib/nachomoderator
 StateDirectory=nachomoderator
 StateDirectoryMode=0700
 
-# Allow the io_uring syscalls the event loop needs, on top of the @system-service
-# set (SPEC-ADDENDUM-TOOLCHAIN A8). io_uring_register is used for buffer rings.
-SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @resources
-SystemCallErrorNumber=EPERM
-SystemCallArchitectures=native
-
 # The token is read from a 0600 file; never log it.
-Environment=RUST_BACKTRACE=0
+Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target

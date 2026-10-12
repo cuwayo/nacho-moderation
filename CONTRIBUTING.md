@@ -1,76 +1,57 @@
 # Contributing
 
-Thanks for contributing to nacho-moderator. This project is governed by four
-binding specifications; **read them before writing code**:
-
-- [`docs/SPEC.md`](docs/SPEC.md)
-- [`docs/SPEC-ADDENDUM-TOOLCHAIN.md`](docs/SPEC-ADDENDUM-TOOLCHAIN.md)
-- [`docs/SPEC-ADDENDUM-DOCS.md`](docs/SPEC-ADDENDUM-DOCS.md)
-- [`docs/SPEC-ADDENDUM-SSOT.md`](docs/SPEC-ADDENDUM-SSOT.md)
+Thanks for contributing to nacho-moderator. The project is a Python 3.12 aiogram
+bot managed with `uv`; see [`CLAUDE.md`](CLAUDE.md) for the rules and
+[`docs/architecture.md`](docs/architecture.md) for the module map.
 
 ## Development environment
 
 ```sh
-sudo apt-get install -y build-essential cmake ninja-build pkg-config \
-    liburing-dev libssl-dev libsqlite3-dev libpcre2-dev \
-    clang clang-format clang-tidy cppcheck gcovr
-git submodule update --init --recursive
+uv sync
+uv run pytest
 ```
 
 ## Build and test
 
 ```sh
-cmake --preset debug && cmake --build --preset debug
-ctest --preset debug --output-on-failure
-cmake --preset asan && cmake --build --preset asan
-ctest --preset asan --output-on-failure
+uv run ruff check .     # lint
+uv run ruff format .    # format
+uv run mypy src         # type-check (strict)
+uv run pytest --cov     # tests + coverage (floor 85%)
 ```
 
 ## Definition of Done
 
-Every milestone or PR must satisfy both the toolchain DoD (A9) and the
-documentation DoD (D9):
+Every change must:
 
-- Builds warning-free with GCC **and** Clang (`-Werror`).
-- `clang-format`, `clang-tidy`, `cppcheck` clean.
-- New code has unit tests; parsers/untrusted input have a fuzz target.
-- `ctest` green under `asan`; `tsan` green if threads are touched.
-- Coverage thresholds met.
-- No new blocking syscall on the main thread (`scripts/check_blocking.sh`).
-- README/docs updated; Doxygen comments written with the code.
-- `docs-check` passes with zero warnings.
-- `scripts/check_consistency.py` passes.
-- CHANGELOG `Unreleased` updated.
-- Conventional Commits (`feat:`, `fix:`, `test:`, `chore:`, `docs:`).
+- Keep `ruff check`, `mypy src`, and `pytest` green.
+- Add tests for new modules and behaviours (test-first for parsers).
+- Inject time and randomness; never call `time.time()`/`secrets` in logic.
+- Keep the command registry the single source of truth for commands.
+- Redact secrets and HTML-escape user text.
+- Update the README/docs and the `CHANGELOG.md` `Unreleased` section.
+- Use Conventional Commits (`feat:`, `fix:`, `test:`, `chore:`, `docs:`).
 
-## Adding a command (S8 checklist)
+## Adding a command
 
-1. Add one `X(...)` row to `src/commands.def`.
-2. Create `src/cmd_<group>.c` with `int cmd_<name>(cmd_ctx_t *ctx)` and full
-   Doxygen comments.
-3. Add unit tests (permission matrix row, argument parsing) and, once the mock
-   server exists, an integration scenario in `tests/mock/scenarios/`.
-4. Create `docs/commands/<name>.md` with non-empty `Examples` and `Edge cases`.
-5. Run `cmake --build --preset debug --target docs-update`.
-6. Run `ctest --preset asan` and `scripts/check_consistency.py --bin build/debug/tgbot`.
-7. Add a CHANGELOG `Unreleased` entry.
+1. Add one `CommandSpec` row to `src/nacho_moderator/commands/registry.py`.
+2. Implement the handler in the appropriate `commands/*.py` module.
+3. Add tests: the permission matrix row, argument parsing, and the behaviour.
+4. Update `docs/commands.md`.
+5. Add a CHANGELOG `Unreleased` entry.
 
 ## Adding a config key
 
-1. Add one `K(...)` row to `src/config.def` (and a `CFG_REQUIRED(...)` entry if it
-   has no usable default).
-2. If it is an enum, add `E(key, value)` rows to `src/config_enums.def`.
-3. Add validator tests and a `docs-update` run.
-4. Regenerate the sample config: `cmake --build --preset debug --target gen-config-example`.
-5. Add a CHANGELOG entry.
+1. Add the field to the relevant model in `src/nacho_moderator/config.py` and, if
+   it is settable from the environment, to `_ENV_MAP`.
+2. Add validation if needed, and tests in `tests/unit/test_config.py`.
+3. Update `docs/configuration.md` and `config/config.example.toml`.
+4. Add a CHANGELOG entry.
 
 ## Code style
 
-- C11, `snake_case`, `module_verb_noun()`, types `_t`, macros/enums `UPPER_SNAKE`.
-- Every fallible function returns `int` (0 = ok, negative errno).
-- Ownership documented in header comments; no `strcpy/strcat/sprintf/gets/atoi`.
-- Never disable a sanitizer or warning to make something pass; fix the root cause.
-- Every io_uring state transition is commented `/* STATE: X -> Y on event Z */`.
-
-Formatting and static analysis configuration lives in `.clang-format`,
-`.clang-tidy`, and `.pre-commit-config.yaml`.
+- Python 3.12, 4-space indent, 100-column lines (ruff enforces both).
+- Type annotations everywhere; `mypy --strict` must pass.
+- Module docstrings and docstrings on public functions and classes.
+- Prefer small, single-purpose modules; keep handlers thin and push logic into
+  services where it can be tested without a bot.

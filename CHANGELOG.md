@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Complete rewrite in Python 3.12 using `uv` and `aiogram 3`.** The bot is now
+  a single-process asyncio application. The previous C11/`liburing` implementation
+  (milestones M0–M7) is preserved in git history and superseded by this port.
+
+### Added
+
+- Feature-parity port of the C bot:
+  - 28 commands across moderation, warnings, per-chat settings, welcome/rules,
+    and automod, driven by a single command registry that produces both `/help`
+    and the two `setMyCommands` scopes.
+  - Command parsing and target resolution (reply, numeric id, `@username`) with
+    duration parsing (`30s`/`10m`/`2h`/`7d`/`1w`).
+  - Administrator cache (10-minute TTL) and the caller/bot permission matrix.
+  - Automod: message locks, word/regex blacklist (with a match-time guard), and
+    antiflood, run before command dispatch.
+  - Join captcha with a timed kick, and a 30-second sweeper that lifts expired
+    temporary bans and mutes (survives restart).
+  - Outbound rate limiting (global 25/s, per-chat 15/min, bulk 1/s) with 429
+    pause handling and exponential-backoff retries for idempotent methods.
+  - Polling and webhook modes; the webhook listener rejects a bad secret with 403.
+  - Graceful shutdown with a bounded drain on `SIGINT`/`SIGTERM`.
+  - SQLite persistence (WAL) via `aiosqlite` with schema migrations.
+- A `pytest` suite (unit tests plus a mock Bot API server) with an 85% coverage
+  floor, `ruff` and `mypy --strict` configured in `pyproject.toml`.
+- Rewritten documentation (`docs/`), README, and systemd/Docker packaging.
+
+### Removed
+
+- The C11 implementation, `liburing` event loop, OpenSSL memory-BIO TLS, the
+  CMake toolchain, Doxygen docs, the `.def` X-macro tables, and the C1–C18
+  consistency-check tooling.
+
+## Historical (C11 implementation, superseded)
+
+The entries below describe the previous C11/`liburing` implementation.
+
 ### Added
 
 - README cover image (`docs/assets/cover.png`), checked by consistency check C17.

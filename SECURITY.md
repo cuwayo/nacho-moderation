@@ -1,43 +1,38 @@
-# Security Policy
+# Security
 
 ## Supported versions
 
-The project is pre-1.0; only the latest `main` is supported for security fixes.
+The latest released minor version receives security fixes.
 
 ## Reporting a vulnerability
 
-Please report suspected vulnerabilities privately, **not** in a public issue. Use
-GitHub's private vulnerability reporting (Security → Report a vulnerability) or
-email the maintainers. Include a description, reproduction steps, and impact.
-
-We aim to acknowledge reports within 72 hours and to provide a remediation plan
-within 14 days.
+Please report suspected vulnerabilities privately (for example through GitHub's
+private vulnerability reporting) rather than in a public issue. Include a
+description, the affected version, and reproduction steps where possible.
 
 ## Scope
 
 In scope:
 
-- Leakage of the bot token (logs, dumps, error messages, URLs).
-- Privilege escalation through commands (a non-admin executing admin commands).
-- Parser bugs in HTTP/JSON/command parsing (memory safety, ReDoS).
-- Forged callback data (captcha button ownership checks).
-
-Out of scope:
-
-- Vulnerabilities in `liburing`, OpenSSL, SQLite, or `yyjson` themselves (report
-  upstream).
-- Issues requiring a compromised host or a modified configuration.
+- Leakage of the bot token or the webhook secret.
+- Privilege escalation: a non-administrator executing an administrative command,
+  or acting on a protected target (the owner, another administrator, or the bot).
+- Forged webhook updates or captcha callback clicks.
+- Parser bugs reachable from untrusted input (update JSON, callback data,
+  blacklist patterns).
+- Denial of service through a hostile blacklist regular expression.
 
 ## Hardening notes
 
-- The bot token is read only from the config file (mode 0600 recommended) or the
-  environment, and is redacted as `bot<token>` everywhere it could be logged or
-  dumped.
-- Webhook mode verifies the `X-Telegram-Bot-Api-Secret-Token` header and rejects
-  mismatches with 403. An empty or missing expected secret rejects **every**
-  request, and webhook mode **refuses to start** unless `webhook.secret` is set to
-  at least 16 characters (enforced at startup and by `--check-config`), so a
-  misconfigured deployment cannot accept forged updates.
-- All SQL uses prepared statements; user text sent to Telegram is HTML-escaped.
-- The systemd unit (M7) restricts address families and system calls, explicitly
-  allowing only the io_uring syscalls the bot needs.
+- The token and webhook secret are redacted from logs and diagnostic output.
+- Webhook updates are authenticated with a constant-time comparison of the
+  `X-Telegram-Bot-Api-Secret-Token` header; a mismatch is rejected with 403, and
+  the bot refuses to start in webhook mode without a secret of at least 16
+  characters.
+- Captcha and settings-panel callback payloads embed the owning user id and are
+  rejected when pressed by anyone else.
+- Every SQL query uses bound parameters; no SQL is built by string concatenation.
+- Blacklist regular expressions are matched with a time limit so a hostile
+  pattern cannot stall the event loop.
+- The systemd unit ships a hardened profile; see
+  [`docs/deployment.md`](docs/deployment.md).

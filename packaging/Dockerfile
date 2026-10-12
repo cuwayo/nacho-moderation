@@ -1,34 +1,28 @@
-# Dockerfile - multi-stage build for nacho-moderator (SPEC-ADDENDUM-TOOLCHAIN A2).
+# Dockerfile - multi-stage build for nacho-moderator (Python + uv).
 #
-# The runtime image is a slim Debian with only the shared libraries the bot
-# needs. io_uring is a kernel feature: run the container with
-#   --security-opt seccomp=unconfined
-# (or a custom profile that allows io_uring_setup/io_uring_enter/io_uring_register),
-# because Docker's default seccomp profile blocks those syscalls.
+# The runtime image is a slim Debian with only the project and its dependencies.
 
 # --- Build stage -----------------------------------------------------------
-FROM debian:bookworm AS build
+FROM python:3.12-slim-bookworm AS build
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential cmake ninja-build pkg-config git ca-certificates \
-        liburing-dev libssl-dev libsqlite3-dev libpcre2-dev \
-    && rm -rf /var/lib/apt/lists/*
+COPY --from=ghcr.io/astral-sh/uv:0.12.13 /uv /uvx /bin/
 
 WORKDIR /src
-COPY . .
-RUN git submodule update --init --recursive || true
-RUN cmake --preset release && cmake --build --preset release
+COPY pyproject.toml uv.lock README.md ./
+COPY src ./src
+RUN uv sync --frozen --no-dev --no-editable
 
 # --- Runtime stage ---------------------------------------------------------
-FROM debian:bookworm-slim AS runtime
+FROM python:3.12-slim-bookworm AS runtime
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        liburing2 libssl3 libsqlite3-0 libpcre2-8-0 ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --home /var/lib/nachomoderator --create-home nachomoderator
+RUN useradd --system --home /var/lib/nachomoderator --create-home nachomoderator
 
-COPY --from=build /src/build/release/tgbot /usr/local/bin/tgbot
-COPY --from=build /src/config/config.example.toml /etc/nachomoderator/config.toml
+WORKDIR /app
+COPY --from=build /src/.venv /app/.venv
+COPY --from=build /src/src /app/src
+COPY config/config.example.toml /etc/nachomoderator/config.toml
+
+ENV PATH="/app/.venv/bin:$PATH"
 
 RUN chown -R nachomoderator:nachomoderator /var/lib/nachomoderator \
     && chmod 0700 /etc/nachomoderator && chmod 0600 /etc/nachomoderator/config.toml
@@ -37,5 +31,5 @@ USER nachomoderator
 WORKDIR /var/lib/nachomoderator
 
 # The bot has no listening port in polling mode; webhook mode listens per config.
-ENTRYPOINT ["/usr/local/bin/tgbot"]
+ENTRYPOINT ["python", "-m", "nacho_moderator"]
 CMD ["--config", "/etc/nachomoderator/config.toml"]

@@ -1,129 +1,74 @@
 # Configuration
 
-Configuration is loaded from `config.toml` (or `--config <file>`), environment
-variables, and built-in defaults. Precedence is **CLI flag > environment variable >
-config file > default**. The schema lives in `src/config.def`; this file is
-checked against it by `scripts/check_consistency.py` (C4).
+Configuration comes from four sources. Precedence, highest first:
 
-## Summary
+1. CLI flags (`--log-level`).
+2. Environment variables.
+3. The `config.toml` file (`--config <file>`, default `./config.toml`).
+4. Built-in defaults.
 
-<!-- BEGIN GENERATED: config-table -->
-| Key | Type | Default | Restart | Description |
+A missing default `config.toml` is not an error; a file requested explicitly with
+`--config` (or `--check-config`) that does not exist is. Unknown keys are
+rejected.
+
+## Keys
+
+| Key | Env var | Type | Default | Description |
 |---|---|---|---|---|
-| `bot_token` | CFG_STR | *(secret)* | yes | Telegram bot token issued by BotFather (required) |
-| `mode` | CFG_ENUM | polling | yes | Update source: polling or webhook |
-| `webhook.listen` | CFG_STR | 127.0.0.1:8080 | yes | Webhook listen address behind a TLS-terminating reverse proxy |
-| `webhook.secret` | CFG_STR | *(secret)* | yes | X-Telegram-Bot-Api-Secret-Token value verified on inbound webhook requests; required (min 16 chars) in webhook mode |
-| `db.path` | CFG_STR | ./bot.db | yes | SQLite database file path |
-| `sudo_ids` | CFG_I64_LIST | *(required)* | yes | Comma-separated Telegram user ids granted bot-level sudo |
-| `api.pool_size` | CFG_INT | 4 | yes | Number of keep-alive TLS connections to the Bot API |
-| `api.base` | CFG_STR | https://api.telegram.org | yes | Bot API base URL; a plain http:// base skips TLS for local or self-hosted deployments |
-| `api.request_timeout_ms` | CFG_INT | 15000 | yes | Per-request deadline for Bot API calls in milliseconds |
-| `polling.timeout` | CFG_INT | 30 | yes | getUpdates long-poll timeout in seconds |
-| `log.level` | CFG_ENUM | info | no | Log verbosity: error, warn, info or debug |
-<!-- END GENERATED: config-table -->
+| `bot_token` | `BOT_TOKEN` | string | *(required)* | Telegram bot token issued by BotFather. Never logged. |
+| `mode` | `MODE` | enum | `polling` | Update source: `polling` or `webhook`. |
+| `sudo_ids` | `SUDO_IDS` | int list | *(empty)* | Comma-separated user ids granted bot-level sudo. |
+| `webhook.listen` | `WEBHOOK_LISTEN` | string | `127.0.0.1:8080` | Webhook listen address behind a reverse proxy. |
+| `webhook.secret` | `WEBHOOK_SECRET` | string | *(required in webhook mode)* | `X-Telegram-Bot-Api-Secret-Token` value; at least 16 characters. |
+| `db.path` | `DB_PATH` | string | `./bot.db` | SQLite database file path. |
+| `api.pool_size` | `API_POOL_SIZE` | int | `4` | Keep-alive connections to the Bot API. |
+| `api.base` | `API_BASE` | string | `https://api.telegram.org` | Bot API base URL; a plain `http://` base skips TLS. |
+| `api.request_timeout_ms` | `API_REQUEST_TIMEOUT_MS` | int | `15000` | Per-request deadline, in milliseconds. |
+| `polling.timeout` | `POLLING_TIMEOUT` | int | `30` | `getUpdates` long-poll timeout, in seconds. |
+| `log.level` | `LOG_LEVEL` | enum | `info` | `error`, `warn`, `info`, or `debug`. |
 
-## Reference
+## Validation
 
-<!-- BEGIN GENERATED: config-reference -->
-### `bot_token`
+- `bot_token` is required in every mode.
+- `webhook.secret` must be set and at least 16 characters in webhook mode; the
+  bot refuses to start otherwise.
+- `api.pool_size` must be at least 1, `polling.timeout` non-negative, and
+  `api.request_timeout_ms` positive.
 
-Telegram bot token issued by BotFather (required).
+`nacho-moderator --check-config <file>` validates a file without starting the
+bot and exits non-zero on any problem.
 
-- **Type:** CFG_STR
-- **Environment variable:** `BOT_TOKEN`
-- **Default:** *(secret)*
-- **Restart required:** yes
+## Example
 
-### `mode`
+```toml
+bot_token = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+mode = "polling"
+sudo_ids = "11111111,22222222"
 
-Update source: polling or webhook.
+[api]
+pool_size = 4
+base = "https://api.telegram.org"
+request_timeout_ms = 15000
 
-- **Type:** CFG_ENUM
-- **Environment variable:** `MODE`
-- **Default:** polling
-- **Restart required:** yes
-- **Allowed values:** polling, webhook
+[polling]
+timeout = 30
 
-### `webhook.listen`
+[log]
+level = "info"
+```
 
-Webhook listen address behind a TLS-terminating reverse proxy.
+> **Note:** bare keys such as `mode` must appear **above** the first `[table]`
+> header in a TOML file.
 
-- **Type:** CFG_STR
-- **Environment variable:** `WEBHOOK_LISTEN`
-- **Default:** 127.0.0.1:8080
-- **Restart required:** yes
+## Webhook mode
 
-### `webhook.secret`
+```toml
+mode = "webhook"
 
-X-Telegram-Bot-Api-Secret-Token value verified on inbound webhook requests; required (min 16 chars) in webhook mode.
+[webhook]
+listen = "127.0.0.1:8080"
+secret = "a-long-random-token-at-least-16-chars"
+```
 
-- **Type:** CFG_STR
-- **Environment variable:** `WEBHOOK_SECRET`
-- **Default:** *(secret)*
-- **Restart required:** yes
-
-### `db.path`
-
-SQLite database file path.
-
-- **Type:** CFG_STR
-- **Environment variable:** `DB_PATH`
-- **Default:** ./bot.db
-- **Restart required:** yes
-
-### `sudo_ids`
-
-Comma-separated Telegram user ids granted bot-level sudo.
-
-- **Type:** CFG_I64_LIST
-- **Environment variable:** `SUDO_IDS`
-- **Default:** *(required, no default)*
-- **Restart required:** yes
-
-### `api.pool_size`
-
-Number of keep-alive TLS connections to the Bot API.
-
-- **Type:** CFG_INT
-- **Environment variable:** `API_POOL_SIZE`
-- **Default:** 4
-- **Restart required:** yes
-
-### `api.base`
-
-Bot API base URL; a plain http:// base skips TLS for local or self-hosted deployments.
-
-- **Type:** CFG_STR
-- **Environment variable:** `API_BASE`
-- **Default:** https://api.telegram.org
-- **Restart required:** yes
-
-### `api.request_timeout_ms`
-
-Per-request deadline for Bot API calls in milliseconds.
-
-- **Type:** CFG_INT
-- **Environment variable:** `API_REQUEST_TIMEOUT_MS`
-- **Default:** 15000
-- **Restart required:** yes
-
-### `polling.timeout`
-
-getUpdates long-poll timeout in seconds.
-
-- **Type:** CFG_INT
-- **Environment variable:** `POLLING_TIMEOUT`
-- **Default:** 30
-- **Restart required:** yes
-
-### `log.level`
-
-Log verbosity: error, warn, info or debug.
-
-- **Type:** CFG_ENUM
-- **Environment variable:** `LOG_LEVEL`
-- **Default:** info
-- **Restart required:** no
-- **Allowed values:** error, warn, info, debug
-<!-- END GENERATED: config-reference -->
+The secret authenticates inbound updates; without it anyone reaching the port
+could forge them. Generate one with `openssl rand -hex 32`.

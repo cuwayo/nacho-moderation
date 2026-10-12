@@ -2,29 +2,8 @@
 
 ![nacho-moderator cover](docs/assets/cover.png)
 
-An **io_uring-based Telegram admin/moderator bot** written in **C11**. All network
-I/O runs asynchronously through `liburing` in a single-threaded event loop;
-blocking work (SQLite, DNS) is isolated in worker threads that signal the loop
-through an `eventfd`.
-
-> **Status: M7 — webhook mode, graceful shutdown, packaging, and the full SSOT
-> check suite.** The build system, sanitizer and coverage presets,
-> single-source-of-truth tables, introspection CLI, and documentation skeleton
-> (M0) are in place; the single-threaded io_uring event loop, TCP connect,
-> OpenSSL memory-BIO TLS, incremental HTTP client, worker-thread DNS, and a
-> minimal Bot API client that performs `getMe` (M1) are implemented; M2 adds
-> reusable keep-alive connections, a connection pool, a token-bucket rate limiter
-> with 429 handling and exponential backoff, and a `getUpdates` long-poll loop;
-> M3 adds update parsing, a command router, a SQLite worker thread with
-> `users`/`chats` upserts, a per-chat administrator cache, and the permission
-> model; M4 adds the moderation commands (`/ban`, `/unban`, `/kick`, `/mute`,
-> `/unmute`, `/del`, `/pin`, `/unpin`, `/purge`), duration parsing, and the
-> expiring-actions sweeper; M5 adds warnings, per-chat settings and the
-> `/settings` panel, welcome/rules with join-time delivery, and the moderation
-> log; M6 adds automod (locks, blacklist, antiflood) and the join captcha; and M7
-> adds webhook mode, `signalfd`-via-io_uring signal handling, a bounded
-> graceful-shutdown drain, the packaged systemd unit and Dockerfile, and the
-> complete SSOT consistency checks C1–C18.
+An **asyncio Telegram admin/moderator bot** written in **Python 3.12**, built on
+[aiogram 3](https://docs.aiogram.dev) and managed with [uv](https://docs.astral.sh/uv/).
 
 ## Features
 
@@ -38,236 +17,131 @@ through an `eventfd`.
   a join welcome rendered from `{first}`/`{mention}`/`{chat}`/`{count}`.
 - A moderation log that mirrors every action to a configured channel.
 - Temporary bans and mutes that survive a restart and lift automatically.
-- Join captcha, antiflood, and blacklist automod.
-- Fully asynchronous network I/O through `io_uring`.
-- Pooled keep-alive Bot API client with outbound rate limiting and retries.
+- Join captcha, antiflood, and word/regex blacklist automod.
+- Fully asynchronous I/O on one event loop; pooled, rate-limited Bot API calls
+  with retries.
 - `getUpdates` long-polling **or** webhook mode behind a TLS-terminating proxy.
-- Graceful shutdown: signals via `signalfd` on the ring, a bounded drain of
-  in-flight requests and DB jobs, then a clean exit.
-- SQLite persistence on a dedicated worker thread, with an eventfd handoff.
-- Single source of truth for commands and config keys, checked in CI (C1–C18).
+- SQLite persistence with migrations, on `aiosqlite`.
+- Graceful shutdown with a bounded drain of in-flight updates.
 
-## Binding specifications
+## How it works
 
-- [`docs/SPEC.md`](docs/SPEC.md) — base spec (architecture, io_uring rules,
-  features, data model, security, milestones M1–M7).
-- [`docs/SPEC-ADDENDUM-TOOLCHAIN.md`](docs/SPEC-ADDENDUM-TOOLCHAIN.md) — toolchain,
-  build, testing, and CI. **Wins on any conflict** and adds milestone **M0**.
-- [`docs/SPEC-ADDENDUM-DOCS.md`](docs/SPEC-ADDENDUM-DOCS.md) — documentation
-  (Doxygen, README, prose docs, comment conventions, docs CI).
-- [`docs/SPEC-ADDENDUM-SSOT.md`](docs/SPEC-ADDENDUM-SSOT.md) — single source of
-  truth (X-macro `.def` tables, introspection CLI, `check_consistency.py` C1–C18).
+```mermaid
+flowchart TD
+    TG[Telegram Bot API] <--> SESSION[aiogram session\nrate limiter + retries]
+    UPD[Update source\npolling / webhook] --> DP[aiogram Dispatcher]
+    DP --> MW[Context middleware\nsettings + perms + automod]
+    MW --> ROUTER[Command dispatch]
+    ROUTER <--> DB[(SQLite)]
+    ROUTER --> SESSION
+```
+
+Updates arrive by long-polling or webhook, both feeding one aiogram dispatcher.
+Every group message passes through a middleware that resolves the chat's settings
+and administrators and runs automod (locks, blacklist, antiflood) before command
+dispatch. All outbound calls go through a session middleware that enforces the
+Bot API rate limits and retry policy. See [`docs/architecture.md`](docs/architecture.md).
 
 ## Requirements
 
-- Linux ≥ 5.15 (target 6.1+), GCC ≥ 12 **and** Clang ≥ 16.
-- CMake ≥ 3.25 + Ninja.
-- System libraries: `liburing-dev`, `libssl-dev`, `libsqlite3-dev`, `libpcre2-dev`.
-- Tools: `clang-format`, `clang-tidy`, `cppcheck`, and (for coverage) `gcovr` or `lcov`.
-- Vendored under `third_party/` as pinned git submodules: `cmocka` 1.1.8, `yyjson` 0.13.0.
-
-```sh
-# Debian/Ubuntu
-sudo apt-get install -y build-essential cmake ninja-build pkg-config \
-    liburing-dev libssl-dev libsqlite3-dev libpcre2-dev \
-    clang clang-format clang-tidy cppcheck gcovr
-```
-
-Clone with submodules:
-
-```sh
-git clone --recursive <repo-url>
-# or, in an existing checkout:
-git submodule update --init --recursive
-```
+- Python 3.12.
+- [uv](https://docs.astral.sh/uv/) (provisions Python 3.12 if needed).
 
 ## Quick start
 
 ```sh title="ci"
-cmake --preset debug
-cmake --build --preset debug
-ctest --preset debug --output-on-failure
+uv sync
+uv run pytest
 ```
 
-The binary exposes read-only introspection dumps that need no token or network:
+Create a bot with [@BotFather](https://t.me/BotFather) and note its token, then:
 
 ```sh
-build/debug/tgbot --help
-build/debug/tgbot --dump-commands-json
-build/debug/tgbot --dump-config-json
-build/debug/tgbot --dump-tables-json
-build/debug/tgbot --dump-config-example
-build/debug/tgbot --check-config config/config.example.toml
+cp config/config.example.toml config.toml
+# edit config.toml and set bot_token
+uv run nacho-moderator --config config.toml
 ```
+
+Add the bot to a group, grant it the administrator rights you want it to use, and
+verify with `/help`.
 
 ## Configuration
 
-Copy [`config/config.example.toml`](config/config.example.toml) to `config.toml`
-and fill in `bot_token`. The sample is **generated** from `src/config.def`; the
-full key reference is in [`docs/configuration.md`](docs/configuration.md).
+The most important keys (full reference in
+[`docs/configuration.md`](docs/configuration.md)):
 
-```toml
-# Minimal polling configuration.
-bot_token = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
-mode = "polling"
-
-[api]
-pool_size = 4
-base = "https://api.telegram.org"
-request_timeout_ms = 15000
-
-[polling]
-timeout = 30
-```
-
-To receive updates through a webhook instead, put the bot behind a
-TLS-terminating reverse proxy and set `mode` and a `webhook.secret` of at least
-16 characters (webhook mode refuses to start without one, because the secret is
-what authenticates inbound updates):
-
-```toml
-mode = "webhook"
-
-[webhook]
-listen = "127.0.0.1:8080"
-secret = "a-long-random-token-at-least-16-chars"
-```
-
-> **Note:** bare keys such as `mode` must appear **above** the first `[table]`
-> header in a TOML file. Either use the `[webhook]` table form above or keep the
-> dotted form (`webhook.secret = "..."`) in the same top-level section as `mode`.
+| Key | Default | Description |
+|---|---|---|
+| `bot_token` | *(required)* | BotFather token; never logged. |
+| `mode` | `polling` | `polling` or `webhook`. |
+| `db.path` | `./bot.db` | SQLite database file. |
+| `api.base` | `https://api.telegram.org` | Bot API base URL. |
+| `log.level` | `info` | `error`, `warn`, `info`, or `debug`. |
 
 ## Commands
 
-The command set lives in `src/commands.def`; the table below is generated from it.
-
-<!-- BEGIN GENERATED: commands-table -->
-| Command | Role | Usage | Description |
-|---|---|---|---|
-| `/help` | ROLE_ANYONE |  | Show available commands |
-| `/ban` | ROLE_ADMIN | `[target] [duration] [reason]` | Ban a user from the chat |
-| `/unban` | ROLE_ADMIN | `[target]` | Lift a ban |
-| `/kick` | ROLE_ADMIN | `[target] [reason]` | Remove a user so they can rejoin |
-| `/mute` | ROLE_ADMIN | `[target] [duration] [reason]` | Restrict a user from sending messages |
-| `/unmute` | ROLE_ADMIN | `[target]` | Restore a user's permissions |
-| `/del` | ROLE_ADMIN |  | Delete the replied-to message and the command |
-| `/pin` | ROLE_ADMIN |  | Pin the replied-to message |
-| `/unpin` | ROLE_ADMIN |  | Unpin the last pinned message |
-| `/purge` | ROLE_ADMIN |  | Delete messages from the replied message to now |
-| `/warn` | ROLE_ADMIN | `[target] [reason]` | Warn a user; auto-act at the limit |
-| `/unwarn` | ROLE_ADMIN | `[target]` | Remove a user's newest warning |
-| `/warns` | ROLE_ANYONE | `[target]` | List your warnings, or a user's (admins) |
-| `/resetwarns` | ROLE_ADMIN | `[target]` | Clear all of a user's warnings |
-| `/setwarnlimit` | ROLE_ADMIN | `<n>` | Set how many warnings trigger the action |
-| `/setwarnaction` | ROLE_ADMIN | `ban|mute|kick` | Set the action taken at the warning limit |
-| `/setlog` | ROLE_OWNER | `<chat_id|off>` | Set or clear the moderation log channel |
-| `/reload` | ROLE_ADMIN |  | Refresh the cached administrator list |
-| `/settings` | ROLE_ADMIN |  | Open the inline settings panel |
-| `/setwelcome` | ROLE_ADMIN | `<text>` | Set the join welcome message |
-| `/welcome` | ROLE_ADMIN | `on|off` | Enable or disable the join welcome |
-| `/setrules` | ROLE_ADMIN | `<text>` | Set the chat rules |
-| `/rules` | ROLE_ANYONE |  | Show the chat rules |
-| `/lock` | ROLE_ADMIN | `<type> [type...]` | Lock a message type (delete + log) |
-| `/unlock` | ROLE_ADMIN | `<type> [type...]` | Unlock a message type |
-| `/blacklist` | ROLE_ADMIN | `add|del|list <word|/regex/>` | Manage the chat word/regex blacklist |
-| `/antiflood` | ROLE_ADMIN | `<messages> <seconds>|off` | Set the flood threshold, or turn it off |
-| `/captcha` | ROLE_ADMIN | `on|off` | Enable or disable join verification |
-<!-- END GENERATED: commands-table -->
-
 See [`docs/commands.md`](docs/commands.md) for the full reference.
 
-## Build and test
-
-```sh
-# ASan + LSan + UBSan (the gating run in CI)
-cmake --preset asan && cmake --build --preset asan
-ctest --preset asan --output-on-failure
-
-# TSan (integration tests touching the DB worker; ASan and TSan are separate builds)
-cmake --preset tsan && cmake --build --preset tsan
-ctest --preset tsan --output-on-failure
-
-# Release (hardened)
-cmake --preset release && cmake --build --preset release
-```
-
-Build directories are `build/<preset>/` (out-of-tree only).
-
-## Fuzzers
-
-```sh
-cmake --preset fuzz && cmake --build --preset fuzz
-./build/fuzz/tests/fuzz/fuzz_http_response -max_total_time=60
-```
-
-## Coverage
-
-```sh
-cmake --preset coverage && cmake --build --preset coverage
-ctest --preset coverage
-cmake --build --preset coverage --target coverage   # -> build/coverage/coverage/index.html
-```
-
-Targets: ≥ 80 % line coverage overall, ≥ 90 % for `http`, `tg_api` (limiter/retry),
-`perms`, `automod`, `util`.
-
-## Lint, formatting, docs, and consistency
-
-```sh
-cmake --build --preset debug --target format-check   # clang-format (CI fails on diff)
-cmake --build --preset debug --target tidy           # clang-tidy
-cmake --build --preset debug --target cppcheck       # cppcheck
-cmake --build --preset debug --target docs           # Doxygen HTML (needs doxygen)
-cmake --build --preset debug --target docs-check     # Doxygen, warnings are errors
-cmake --build --preset debug --target docs-update    # rewrite generated doc blocks
-cmake --build --preset debug --target docs-verify    # docgen --check + consistency
-scripts/check_consistency.py --bin build/debug/tgbot # SSOT checks C1-C5
-```
+| Command | Role | Description |
+|---|---|---|
+| `/help` | anyone | Show available commands. |
+| `/ban` `/unban` `/kick` `/mute` `/unmute` | admin | Moderation. |
+| `/del` `/pin` `/unpin` `/purge` | admin | Message management. |
+| `/warn` `/unwarn` `/warns` `/resetwarns` | admin / anyone | Warnings. |
+| `/settings` `/setwelcome` `/welcome` `/setrules` `/rules` `/reload` | admin | Settings. |
+| `/setlog` | owner | Moderation log channel. |
+| `/lock` `/unlock` `/blacklist` `/antiflood` `/captcha` | admin | Automod. |
 
 ## Deployment
 
-A hardened systemd unit and a Dockerfile live in [`packaging/`](packaging/). See
-[`docs/deployment.md`](docs/deployment.md) for the io_uring and seccomp notes.
-
-## Repository layout
-
-```
-include/tg/       public headers (tg_ module prefix)
-src/              first-party sources; *.def SSOT tables; libtgbot_core + tgbot
-tests/unit/       cmocka unit tests (test_*.c)
-tests/integration/ end-to-end tests against the mock Telegram server
-tests/fuzz/       libFuzzer harnesses (fuzz_*.c)
-tests/mock/       scripted mock Bot API server + scenarios
-tests/scripts/    unit tests for the Python check scripts
-tests/golden/     golden files (e.g. --help output)
-docs/             prose docs, Doxygen config, ADRs, man pages
-config/           generated sample configuration
-cmake/            Warnings/Sanitizers/Hardening/FindLiburing modules
-packaging/        systemd unit and Dockerfile
-third_party/      vendored cmocka + yyjson (pinned submodules)
-scripts/          format/tidy/cppcheck/coverage/docgen/check_consistency
+```sh
+sudo install -m 0644 packaging/nachomoderator.service /etc/systemd/system/
+sudo systemctl enable --now nachomoderator.service
 ```
 
-## Conventions
+Docker and webhook setup are covered in [`docs/deployment.md`](docs/deployment.md).
 
-- C11, no GNU extensions in logic modules (allowed in `loop.c`/`tls.c`, documented).
-- `snake_case` functions/vars, `module_verb_noun()`, types `_t`, macros/enums `UPPER_SNAKE`.
-- Every fallible function returns `int` (0 = ok, negative errno); no silent failures.
-- No `strcpy/strcat/sprintf/gets/atoi`. Ownership documented in header comments.
-- Never disable a sanitizer or warning to make something pass.
-- Commit messages follow Conventional Commits (`feat:`, `fix:`, `test:`, `chore:`).
+## Development
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full developer workflow.
+```sh
+uv sync
+uv run ruff check .          # lint
+uv run mypy src              # type-check
+uv run pytest --cov          # tests + coverage
+```
+
+See [`docs/testing.md`](docs/testing.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+## Project layout
+
+```
+src/nacho_moderator/   the bot package
+  commands/            the command registry and handlers
+  services/            perms, settings, automod, captcha, expiry, welcome
+  transport/           rate limiting and retries
+  db/                  SQLite schema, migrations, repositories
+tests/                 unit tests, a fake bot, and a mock API server
+docs/                  prose documentation
+packaging/             systemd unit and Dockerfile
+```
+
+## Troubleshooting
+
+See [`docs/troubleshooting.md`](docs/troubleshooting.md). Top issues: the bot
+lacks a required admin right, webhook secret mismatch, `chat_member` updates not
+delivered because the bot is not an administrator, and HTTP 429 floods.
 
 ## Security
 
-Report vulnerabilities per [`SECURITY.md`](SECURITY.md). The bot token is read only
-from the config file or environment and is redacted in all logs and dumps.
+The token is read from config or environment and redacted from logs. Webhook
+updates are authenticated with a constant-time secret check. See
+[`SECURITY.md`](SECURITY.md).
 
 ## License
 
-GNU General Public License v3.0 only (GPL-3.0-only). See [`LICENSE`](LICENSE).
+GPL-3.0-or-later. See [`LICENSE`](LICENSE).
 
 ## Acknowledgements
 
-Built on `liburing`, OpenSSL, SQLite, `yyjson`, and `cmocka`.
+Built on [aiogram](https://github.com/aiogram/aiogram) and packaged with
+[uv](https://github.com/astral-sh/uv).

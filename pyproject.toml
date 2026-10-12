@@ -1,0 +1,96 @@
+[project]
+name = "nacho-moderator"
+version = "0.1.0"
+description = "An asyncio Telegram admin/moderator bot built with aiogram"
+readme = "README.md"
+authors = [{ name = "cuwayo", email = "cuwayo@localhost" }]
+requires-python = ">=3.12,<3.13"
+license = "GPL-3.0-or-later"
+dependencies = [
+    "aiogram==3.31.0",
+    "aiosqlite==0.22.1",
+    "regex==2026.9.29",
+]
+
+[project.scripts]
+nacho-moderator = "nacho_moderator.main:main"
+
+[project.urls]
+Repository = "https://github.com/cuwayo/nacho-moderation"
+
+[build-system]
+requires = ["uv_build>=0.12.13,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-cov==7.1.0",
+    "ruff==0.17.0",
+    "mypy==2.4.0",
+]
+
+[tool.uv]
+package = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific
+    "ASYNC", # flake8-async
+    "S",   # flake8-bandit (security)
+]
+ignore = ["S101"] # asserts are fine in tests and for internal invariants
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "SLF001", "E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["nacho_moderator"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+warn_unused_ignores = true
+disallow_untyped_decorators = false
+files = ["src"]
+
+[[tool.mypy.overrides]]
+module = ["aiogram.*", "regex"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["."]
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+source = ["nacho_moderator"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 85
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@overload",
+]
