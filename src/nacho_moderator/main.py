@@ -14,6 +14,7 @@ import contextlib
 import signal
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -163,9 +164,8 @@ def _clear_aiogram_caches() -> None:
 
         # aiogram exposes event_type as a property over an lru_cache; reach the
         # descriptor through the class __dict__ (mypy otherwise sees the getter).
-        descriptor = Update.__dict__["event_type"]
-        cache_clear = getattr(descriptor.fget, "cache_clear")
-        cache_clear()
+        descriptor = cast("Any", Update.__dict__["event_type"])
+        descriptor.fget.cache_clear()
     except Exception:  # pragma: no cover - defensive; never fatal at shutdown
         _log.debug("could not clear aiogram caches", exc_info=True)
 

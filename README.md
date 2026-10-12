@@ -46,7 +46,12 @@ Updates arrive by long-polling or webhook, both feeding one aiogram dispatcher.
 Every group message passes through a middleware that resolves the chat's settings
 and administrators and runs automod (locks, blacklist, antiflood) before command
 dispatch. All outbound calls go through a session middleware that enforces the
-Bot API rate limits and retry policy. See [`docs/architecture.md`](docs/architecture.md).
+Bot API rate limits and retry policy. See [`docs/SPEC.md`](docs/SPEC.md) and
+[`docs/architecture.md`](docs/architecture.md).
+
+The bot was originally written in C11 on `io_uring`; that implementation is
+preserved at the `c-implementation-final` git tag and superseded by this Python
+port. See [`docs/adr/0001-python-asyncio-aiogram.md`](docs/adr/0001-python-asyncio-aiogram.md).
 
 ## Requirements
 

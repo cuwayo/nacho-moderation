@@ -41,6 +41,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Project spec restored for Python.** `docs/SPEC.md` documents the current
+  stack (goals, non-goals, architecture, update sources, the 31-command table,
+  automod, captcha, expiry, data model, config, security, acceptance criteria),
+  keeping the still-valid behaviour from the original spec (rate limits 25/s
+  global, 15/min per chat, 1/s bulk, 429 `retry_after`, backoff 1/2/4/8/16/30 s,
+  captcha `cap:<chat>:<user>:<nonce>` ≤ 64 bytes, temp actions surviving
+  restart). ADR [0001](docs/adr/0001-python-asyncio-aiogram.md) records leaving
+  C/`liburing` and ADR [0002](docs/adr/0002-python-loop-lag-budget.md) the Python
+  latency budgets.
+
 - **Complete rewrite in Python 3.12 using `uv` and `aiogram 3`.** The bot is now
   a single-process asyncio application. The previous C11/`liburing` implementation
   (milestones M0–M7) is preserved in git history and superseded by this port.
@@ -92,7 +102,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The C11 implementation, `liburing` event loop, OpenSSL memory-BIO TLS, the
   CMake toolchain, Doxygen docs, the `.def` X-macro tables, and the C1–C18
-  consistency-check tooling.
+  consistency-check tooling. The C code remains reachable at the
+  `c-implementation-final` tag.
 
 ## Historical (C11 implementation, superseded)
 
