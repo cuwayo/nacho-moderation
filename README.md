@@ -1,5 +1,10 @@
 # nacho-moderator
 
+[![CI](https://github.com/cuwayo/nacho-moderation/actions/workflows/ci.yml/badge.svg)](https://github.com/cuwayo/nacho-moderation/actions/workflows/ci.yml)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
+
 ![nacho-moderator cover](docs/assets/cover.png)
 
 An **asyncio Telegram admin/moderator bot** written in **Python 3.12**, built on
