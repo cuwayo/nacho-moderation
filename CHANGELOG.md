@@ -73,6 +73,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **API reference and diagrams.** The package ships a `py.typed` marker and every
+  public module, class, and function has a Google-style docstring (enforced by
+  ruff `D`). `pdoc` generates an HTML API reference into `build/docs`; the
+  `docs-build` CI job fails on warnings and publishes to GitHub Pages from `main`
+  and tags. The README gains a sequence diagram for update → router → command →
+  API call → DB write alongside the architecture flowchart.
+
 - **Docs consistency checks.** `tests/test_docs_consistency.py` runs in the
   normal suite and fails when the prose drifts from the single sources of truth:
   every registered command has a `### /<name>` section in `docs/commands.md`

@@ -42,6 +42,24 @@ flowchart TD
     ROUTER --> SESSION
 ```
 
+One update, end to end:
+
+```mermaid
+sequenceDiagram
+    participant TG as Telegram
+    participant DP as Dispatcher
+    participant MW as Context middleware
+    participant R as Command handler
+    participant DB as SQLite (aiosqlite)
+    TG->>DP: Update (message)
+    DP->>MW: outer middleware
+    MW->>DB: load settings + admins
+    MW->>MW: automod (locks/blacklist/antiflood)
+    MW->>R: dispatch the command
+    R->>DB: record the action
+    R->>TG: sendMessage / banChatMember / ...
+```
+
 Updates arrive by long-polling or webhook, both feeding one aiogram dispatcher.
 Every group message passes through a middleware that resolves the chat's settings
 and administrators and runs automod (locks, blacklist, antiflood) before command
@@ -135,6 +153,19 @@ uv run python scripts/check_coverage.py coverage.json   # per-module floors
 ```
 
 See [`docs/testing.md`](docs/testing.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+## API reference
+
+The package is fully type-annotated and ships a `py.typed` marker; every public
+module, class, and function has a Google-style docstring. Generate the HTML API
+reference with [pdoc](https://pdoc.dev):
+
+```sh
+uv run pdoc nacho_moderator -o build/docs
+```
+
+CI builds it (`docs-build`) and publishes it to GitHub Pages from `main` and
+tags. The generated HTML is not committed.
 
 ## Project layout
 
