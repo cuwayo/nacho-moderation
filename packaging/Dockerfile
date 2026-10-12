@@ -6,7 +6,7 @@
 
 # --- Build stage -----------------------------------------------------------
 # python:3.12-slim-bookworm
-FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS build
+FROM python:3.14-slim-bookworm@sha256:48b13b003dda20b16f9442b8475aa05fe21bf6579a8c881db92ffb4d8fd20f83 AS build
 
 COPY --from=ghcr.io/astral-sh/uv:0.12.13 /uv /uvx /bin/
 
@@ -17,7 +17,7 @@ RUN uv sync --frozen --no-dev --no-editable
 
 # --- Runtime stage ---------------------------------------------------------
 # python:3.12-slim-bookworm
-FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS runtime
+FROM python:3.14-slim-bookworm@sha256:48b13b003dda20b16f9442b8475aa05fe21bf6579a8c881db92ffb4d8fd20f83 AS runtime
 
 # A non-root, dedicated user. The bot needs no privileges.
 RUN useradd --system --home /var/lib/nachomoderator --create-home --shell /usr/sbin/nologin nachomoderator
