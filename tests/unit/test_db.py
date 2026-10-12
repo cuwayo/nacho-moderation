@@ -2,7 +2,49 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from nacho_moderator.db import Database
+from nacho_moderator.errors import DatabaseError
+
+
+async def test_connect_creates_parent_directory(tmp_path: Path) -> None:
+    """A file path whose parent does not exist is created on connect."""
+    db_path = tmp_path / "nested" / "sub" / "bot.db"
+    db = await Database.connect(str(db_path))
+    try:
+        assert db_path.is_file()
+    finally:
+        await db.close()
+
+
+async def test_migrate_is_idempotent(tmp_path: Path) -> None:
+    """Re-opening an existing database does not re-run the migration."""
+    db_path = tmp_path / "bot.db"
+    first = await Database.connect(str(db_path))
+    await first.close()
+    second = await Database.connect(str(db_path))  # exercises the version>=SCHEMA_VERSION return
+    try:
+        assert (await second.get_settings(-1)).warn_limit == 3
+    finally:
+        await second.close()
+
+
+async def test_connect_to_bad_path_raises(tmp_path: Path) -> None:
+    """An unopenable path surfaces as a DatabaseError."""
+    # A directory is not a valid SQLite file.
+    bad = tmp_path / "adir"
+    bad.mkdir()
+    with pytest.raises(DatabaseError):
+        await Database.connect(str(bad))
+
+
+async def test_upsert_chat_stores_title_and_type(db: Database) -> None:
+    await db.upsert_chat(-100, "Testers", "supergroup")
+    settings = await db.get_settings(-100)
+    assert settings.chat_id == -100
 
 
 async def test_schema_migrates_and_defaults(db: Database) -> None:

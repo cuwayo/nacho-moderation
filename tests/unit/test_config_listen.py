@@ -51,7 +51,7 @@ def test_parse_listen_accepts(value: str, expected: tuple[str, int]) -> None:
     ],
 )
 def test_parse_listen_rejects(value: str) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"webhook\.listen"):
         parse_listen(value)
 
 

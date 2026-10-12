@@ -123,8 +123,9 @@ Docker and webhook setup are covered in [`docs/deployment.md`](docs/deployment.m
 ```sh
 uv sync
 uv run ruff check .          # lint
-uv run mypy src              # type-check
-uv run pytest --cov          # tests + coverage
+uv run mypy                  # type-check (strict, src + tests + scripts)
+uv run pytest --cov          # tests + coverage (global floor 90%)
+uv run python scripts/check_coverage.py coverage.json   # per-module floors
 ```
 
 See [`docs/testing.md`](docs/testing.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).

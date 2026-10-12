@@ -41,6 +41,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Python toolchain hardening.** The lint set gains `D` (Google docstrings),
+  `ANN`, `PT`, `PL`, `PERF`, `TRY`, `ARG`, `ERA`, `T20`, `LOG`, `G`, `PTH`, and
+  `FBT` (every `ignore` justified in `pyproject.toml`); `mypy --strict` now
+  covers `tests` and `scripts` as well as `src`. Tests run under
+  `pytest-asyncio` (auto), `pytest-randomly`, and `pytest-timeout` (30 s), and CI
+  runs the suite with `PYTHONASYNCIODEBUG=1 -X dev -W error`. Coverage uses
+  `--cov-branch` with a **global floor of 90%** and per-module floors
+  (`transport/*`, `services/perms.py`, `services/automod.py`, `commands/args.py`,
+  `config.py`, `logging_setup.py` ≥ 95%; `handlers.py`, `main.py` ≥ 85%) enforced
+  by `scripts/check_coverage.py`. Added `pip-audit`, `bandit` (ruff `S`),
+  `detect-secrets` (with a committed baseline), Dependabot, a pre-commit config,
+  a `pydoc` API-docs job, a hardened Dockerfile (non-root, digest-pinned,
+  `HEALTHCHECK`) and systemd unit, and CI jobs for lint, typecheck, test,
+  coverage, security, docs-lint, docs-smoke, docs-consistency, docs-build, and
+  soak. GitHub Actions are pinned by commit SHA.
+
 - **Project spec restored for Python.** `docs/SPEC.md` documents the current
   stack (goals, non-goals, architecture, update sources, the 31-command table,
   automod, captcha, expiry, data model, config, security, acceptance criteria),

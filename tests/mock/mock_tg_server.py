@@ -30,6 +30,7 @@ import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 
 DEFAULT_ME = {
     "id": 123456789,
@@ -111,6 +112,22 @@ DEFAULT_ADMINS = [
 # Paths look like /bot<token>/<method>.
 PATH_RE = re.compile(r"^/bot[^/]+/(?P<method>[A-Za-z]+)")
 
+# Methods that answer with a bare `true` (the Bot API's "success" replies).
+_BOOL_METHODS = frozenset(
+    {
+        "setMyCommands",
+        "banChatMember",
+        "unbanChatMember",
+        "restrictChatMember",
+        "promoteChatMember",
+        "setChatAdministratorCustomTitle",
+        "deleteMessage",
+        "deleteMessages",
+        "pinChatMessage",
+        "unpinChatMessage",
+    }
+)
+
 # Maximum number of updates returned in one getUpdates reply during a soak run.
 # One at a time: the poller processes every update in a reply synchronously within
 # a single event-loop iteration, so a large reply would make one iteration do
@@ -124,22 +141,22 @@ class MockState:
 
     def __init__(self) -> None:
         self.updates_served = 0
-        self.scripted: list[dict] = []
-        self.faults: dict[str, list[dict]] = {}
-        self.recorded: list[dict] = []
+        self.scripted: list[list[dict[str, Any]]] = []
+        self.faults: dict[str, list[dict[str, Any]]] = {}
+        self.recorded: list[dict[str, Any]] = []
         # Administrator list returned by getChatAdministrators; a scenario may
         # override it to grant the bot (or a caller) promote rights.
-        self.admins: list[dict] = DEFAULT_ADMINS
+        self.admins: list[dict[str, Any]] = DEFAULT_ADMINS
         # Soak mode: a background thread feeds synthetic updates at a target rate.
         self.soak = False
         self.soak_rate = 1000
         self.soak_until = 0.0
-        self.soak_batches: list[dict] = []
+        self.soak_batches: list[dict[str, Any]] = []
         self.soak_next_id = 1
         self.soak_started = threading.Event()
         self.soak_lock = threading.Lock()
 
-    def next_update_batch(self) -> dict:
+    def next_update_batch(self) -> dict[str, Any]:
         """Return one scripted update batch, then empty batches."""
         if self.scripted:
             batch = self.scripted.pop(0)
@@ -158,7 +175,7 @@ class MockState:
             return {"ok": True, "result": batch}
         return {"ok": True, "result": []}
 
-    def next_fault(self, method: str) -> dict | None:
+    def next_fault(self, method: str) -> dict[str, Any] | None:
         """Pop the next scripted fault for a method, if any."""
         faults = self.faults.get(method)
         if faults:
@@ -189,7 +206,7 @@ class MockState:
                 next_at = time.monotonic()  # keep up if we fell behind
 
 
-def _parse_body(body: bytes) -> dict | None:
+def _parse_body(body: bytes) -> dict[str, Any] | None:
     """Parse a request body that may be JSON or form-encoded.
 
     aiogram posts multipart/form-data or application/x-www-form-urlencoded
@@ -207,7 +224,7 @@ def _parse_body(body: bytes) -> dict | None:
     except UnicodeDecodeError:
         return None
     parsed = urllib.parse.parse_qs(text, keep_blank_values=True)
-    result: dict = {}
+    result: dict[str, Any] = {}
     for key, values in parsed.items():
         result[key] = _coerce(values[0])
     return result
@@ -225,7 +242,7 @@ def _coerce(value: str) -> object:
         return value
 
 
-def _mock_message(body: bytes) -> dict:
+def _mock_message(body: bytes) -> dict[str, Any]:
     """Build a full Message object for sendMessage/editMessageText replies.
 
     aiogram 3.x validates the returned Message against a strict model that
@@ -242,7 +259,7 @@ def _mock_message(body: bytes) -> dict:
     }
 
 
-def _soak_update(update_id: int) -> dict:
+def _soak_update(update_id: int) -> dict[str, Any]:
     """One synthetic supergroup message Update for the soak feeder."""
     return {
         "update_id": update_id,
@@ -265,7 +282,7 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "mock-tg/0.2"
 
-    def _send_json(self, status: int, payload: dict) -> None:
+    def _send_json(self, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -281,7 +298,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _record(self, method: str, body: bytes) -> None:
-        entry = {"method": method, "path": self.path}
+        entry: dict[str, Any] = {"method": method, "path": self.path}
         entry["json"] = _parse_body(body)
         state: MockState = self.server.state  # type: ignore[attr-defined]
         state.recorded.append(entry)
@@ -319,15 +336,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "result": state.admins})
         elif api_method == "sendMessage":
             self._send_json(200, {"ok": True, "result": _mock_message(body)})
-        elif (
-            api_method == "setMyCommands"
-            or api_method in ("banChatMember", "unbanChatMember", "restrictChatMember")
-            or api_method == "promoteChatMember"
-            or api_method == "setChatAdministratorCustomTitle"
-            or api_method == "deleteMessage"
-            or api_method == "deleteMessages"
-            or api_method in ("pinChatMessage", "unpinChatMessage")
-        ):
+        elif api_method in _BOOL_METHODS:
             self._send_json(200, {"ok": True, "result": True})
         elif api_method == "getChatMemberCount":
             self._send_json(200, {"ok": True, "result": 42})

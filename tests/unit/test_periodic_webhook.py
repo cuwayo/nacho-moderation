@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any, cast
 
 from aiohttp import web
 
@@ -63,17 +64,17 @@ def _handler(secret: str) -> Secret403Handler:
 
 def test_webhook_secret_matches() -> None:
     handler = _handler("0123456789abcdef")
-    assert handler.verify_secret("0123456789abcdef", None) is True
+    assert handler.verify_secret("0123456789abcdef", cast("Any", None)) is True
 
 
 def test_webhook_secret_mismatch() -> None:
     handler = _handler("0123456789abcdef")
-    assert handler.verify_secret("wrong", None) is False
+    assert handler.verify_secret("wrong", cast("Any", None)) is False
 
 
 def test_webhook_secret_empty_configured_rejects_all() -> None:
     handler = _handler("")
-    assert handler.verify_secret("anything", None) is False
+    assert handler.verify_secret("anything", cast("Any", None)) is False
 
 
 def test_webhook_returns_403_on_bad_secret(monkeypatch) -> None:

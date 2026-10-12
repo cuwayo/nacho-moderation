@@ -412,7 +412,9 @@ def lookup(name: str) -> CommandSpec | None:
 def render_help(role: Role, *, is_group: bool) -> str:
     """Render the ``/help`` text for a caller of the given role."""
     lines = ["Available commands:"]
-    for spec in COMMANDS:
-        if spec.visible_to(role, is_group=is_group):
-            lines.append(f"/{spec.name} - {spec.brief}")
+    lines.extend(
+        f"/{spec.name} - {spec.brief}"
+        for spec in COMMANDS
+        if spec.visible_to(role, is_group=is_group)
+    )
     return "\n".join(lines)

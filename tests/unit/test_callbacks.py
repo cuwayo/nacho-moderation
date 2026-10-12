@@ -63,3 +63,13 @@ def test_welcome_mention_without_username_is_plain() -> None:
 
 def test_welcome_unknown_placeholder_passes_through() -> None:
     assert render_welcome("{nope}", _user(), "T", 0) == "{nope}"
+
+
+def test_welcome_unclosed_brace_passes_through() -> None:
+    """A ``{`` with no closing ``}`` is emitted literally."""
+    assert render_welcome("{unclosed", _user(), "T", 0) == "{unclosed"
+
+
+def test_welcome_none_user_renders_defaults() -> None:
+    """A missing user falls back to the generic greeting."""
+    assert render_welcome("{first} {mention}", None, "T", 0) == "there there"

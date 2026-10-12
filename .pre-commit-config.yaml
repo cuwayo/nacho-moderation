@@ -1,0 +1,52 @@
+# Pre-commit hooks for nacho-moderator (P7).
+#
+# Install with `uv run pre-commit install`. Run on demand with
+# `uv run pre-commit run --all-files`.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.4.0
+    hooks:
+      - id: mypy
+        additional_dependencies: []
+        # The project's own mypy config (strict) governs; run it over the repo.
+        args: [--config-file=pyproject.toml]
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: [--baseline, .secrets.baseline]
+        exclude: uv\.lock
+
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.3
+    hooks:
+      - id: codespell
+        args: [--ignore-words-list=nd,ba,te]
+        exclude: ^(uv\.lock|\.secrets\.baseline)$
+
+  - repo: local
+    hooks:
+      - id: uv-lock-check
+        name: uv lock is in sync
+        entry: uv lock --check
+        language: system
+        pass_filenames: false
+        files: ^(pyproject\.toml|uv\.lock)$

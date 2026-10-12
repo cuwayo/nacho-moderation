@@ -66,8 +66,7 @@ class Histogram:
         """Add one sample."""
         self.count += 1
         self.total += value
-        if value > self.maximum:
-            self.maximum = value
+        self.maximum = max(self.maximum, value)
         for index, edge in enumerate(self._edges):
             if value <= edge:
                 self._counts[index] += 1

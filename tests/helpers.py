@@ -8,12 +8,17 @@ a test asserts on *our* behaviour, not on aiogram's models.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from nacho_moderator.commands.context import CommandContext, Invocation
 from nacho_moderator.constants import Right, Role
 from nacho_moderator.services.perms import Subject
 from tests.conftest import ADMIN_ID, BOT_ID, CHAT_ID, TARGET_ID, FakeBot
+
+#: A fixed timestamp for aiogram message/update objects. aiogram coerces a bare
+#: int at runtime but annotates ``date`` as ``datetime``, so tests pass this.
+FIXED_DATE = datetime(2023, 11, 14, 22, 13, 20, tzinfo=UTC)
 
 
 @dataclass
@@ -121,6 +126,7 @@ __all__ = [
     "ADMIN_ID",
     "BOT_ID",
     "CHAT_ID",
+    "FIXED_DATE",
     "TARGET_ID",
     "FakeBot",
     "FakeChat",

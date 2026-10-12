@@ -40,7 +40,7 @@ class _Capture:
 
     def __init__(self) -> None:
         self.records: list[str] = []
-        self.handler = logging.StreamHandler(self)  # type: ignore[arg-type]
+        self.handler = logging.StreamHandler(self)
         self.handler.setFormatter(RedactingFormatter("%(levelname)s %(name)s %(message)s"))
 
     def write(self, text: str) -> None:
@@ -195,15 +195,27 @@ def test_third_party_loggers_are_redacted(capture: _Capture, logger_name: str) -
     assert _TOKEN not in capture.output
 
 
-def test_configure_logging_installs_redacting_formatter(capsys: pytest.CaptureFixture[str]) -> None:
+def test_configure_logging_installs_redacting_formatter(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     from nacho_moderator.config import LogLevelName
 
-    register_secret(_TOKEN)
-    configure_logging(LogLevelName.INFO)
-    logging.getLogger("nacho_moderator.test").info("token %s", _TOKEN)
-    err = capsys.readouterr().err
-    assert _TOKEN not in err
-    assert "<redacted>" in err
+    # configure_logging mutates the global root logger; restore it afterwards so
+    # the handler bound to capsys's (soon-closed) stderr does not linger and
+    # break a later background thread that logs through the root logger.
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    saved_level = root.level
+    try:
+        register_secret(_TOKEN)
+        configure_logging(LogLevelName.INFO)
+        logging.getLogger("nacho_moderator.test").info("token %s", _TOKEN)
+        err = capsys.readouterr().err
+        assert _TOKEN not in err
+        assert "<redacted>" in err
+    finally:
+        root.handlers[:] = saved_handlers
+        root.setLevel(saved_level)
 
 
 def test_settings_repr_masks_secrets() -> None:

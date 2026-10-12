@@ -16,6 +16,7 @@ import sys
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -45,14 +46,14 @@ def _wait_for_port(port: int, timeout: float) -> None:
     raise RuntimeError(f"mock server did not open port {port}")
 
 
-def _read_calls(log: Path) -> list[dict]:
+def _read_calls(log: Path) -> list[dict[str, Any]]:
     if not log.is_file():
         return []
-    out: list[dict] = []
-    for line in log.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line:
-            out.append(json.loads(line))
+    out: list[dict[str, Any]] = []
+    for raw in log.read_text(encoding="utf-8").splitlines():
+        stripped = raw.strip()
+        if stripped:
+            out.append(json.loads(stripped))
     return out
 
 
@@ -64,7 +65,7 @@ class IntegrationRun:
         self.bot_log = bot_log
         self.bot = bot
 
-    def calls(self) -> list[dict]:
+    def calls(self) -> list[dict[str, Any]]:
         """Return every recorded API call."""
         return _read_calls(self.calls_log)
 
@@ -72,7 +73,7 @@ class IntegrationRun:
         """Return the recorded API method names, in order."""
         return [c.get("method", "") for c in self.calls()]
 
-    def wait_for(self, method: str, *, timeout: float = CALL_TIMEOUT_SECONDS) -> dict:
+    def wait_for(self, method: str, *, timeout: float = CALL_TIMEOUT_SECONDS) -> dict[str, Any]:
         """Block until a call to ``method`` is recorded, and return it.
 
         Raises:

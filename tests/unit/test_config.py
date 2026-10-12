@@ -108,3 +108,48 @@ def test_unknown_key_is_rejected(tmp_path: Path) -> None:
     path = _write(tmp_path, 'bot_token = "1:A"\nbogus = 1\n')
     with pytest.raises(ConfigError):
         load_settings(path, environ={})
+
+
+def test_invalid_toml_is_error(tmp_path: Path) -> None:
+    path = _write(tmp_path, "this is not = = toml\n")
+    with pytest.raises(ConfigError) as excinfo:
+        load_settings(path, environ={})
+    assert "invalid TOML" in str(excinfo.value)
+
+
+def test_invalid_sudo_ids_is_error(tmp_path: Path) -> None:
+    path = _write(tmp_path, 'bot_token = "1:A"\nsudo_ids = "1,x,3"\n')
+    with pytest.raises(ConfigError) as excinfo:
+        load_settings(path, environ={})
+    assert "sudo_ids" in str(excinfo.value)
+
+
+def test_empty_sudo_ids_string(tmp_path: Path) -> None:
+    path = _write(tmp_path, 'bot_token = "1:A"\nsudo_ids = "  "\n')
+    assert load_settings(path, environ={}).sudo_ids == []
+
+
+def test_pool_size_must_be_positive(tmp_path: Path) -> None:
+    path = _write(tmp_path, 'bot_token = "1:A"\n[api]\npool_size = 0\n')
+    with pytest.raises(ConfigError) as excinfo:
+        load_settings(path, environ={})
+    assert "pool_size" in str(excinfo.value)
+
+
+def test_polling_timeout_must_not_be_negative(tmp_path: Path) -> None:
+    path = _write(tmp_path, 'bot_token = "1:A"\n[polling]\ntimeout = -1\n')
+    with pytest.raises(ConfigError) as excinfo:
+        load_settings(path, environ={})
+    assert "polling.timeout" in str(excinfo.value)
+
+
+def test_request_timeout_must_be_positive(tmp_path: Path) -> None:
+    path = _write(tmp_path, 'bot_token = "1:A"\n[api]\nrequest_timeout_ms = 0\n')
+    with pytest.raises(ConfigError) as excinfo:
+        load_settings(path, environ={})
+    assert "request_timeout_ms" in str(excinfo.value)
+
+
+def test_request_timeout_seconds_property(tmp_path: Path) -> None:
+    path = _write(tmp_path, 'bot_token = "1:A"\n[api]\nrequest_timeout_ms = 2500\n')
+    assert load_settings(path, environ={}).api.request_timeout_seconds == 2.5

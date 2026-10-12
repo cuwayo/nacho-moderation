@@ -19,6 +19,7 @@ from nacho_moderator.services.expiry import CaptchaSweeper, ExpirySweeper
 from nacho_moderator.services.perms import AdminCache, Subject, subject_for_user
 from nacho_moderator.services.settings import SettingsService
 from tests.conftest import ADMIN_ID, BOT_ID, CHAT_ID, TARGET_ID, FakeBot, fake_admin
+from tests.helpers import FIXED_DATE
 
 _CHAT = Chat(id=CHAT_ID, type="supergroup", title="Testers")
 
@@ -47,7 +48,7 @@ def _message(
 ) -> Message:
     return Message(
         message_id=message_id,
-        date=1700000000,
+        date=FIXED_DATE,
         chat=_CHAT,
         from_user=User(id=user_id, is_bot=is_bot, first_name="User", username="u"),
         text=text,
@@ -77,7 +78,9 @@ async def _app(fake_bot: FakeBot, db: Database, clock: FakeClock) -> App:
     )
 
 
-async def _dispatch(app: App, message: Message, *, caller: Subject, admins: dict) -> list[str]:
+async def _dispatch(
+    app: App, message: Message, *, caller: Subject, admins: dict[int, Subject]
+) -> list[str]:
     """Run MessageHandler with pre-resolved caller/admins (as the middleware would)."""
     handler = MessageHandler(app)
     settings = await app.settings.get(CHAT_ID)
@@ -125,7 +128,7 @@ async def test_group_only_command_in_private(
     private_chat = Chat(id=1, type="private")
     msg = Message(
         message_id=1,
-        date=0,
+        date=FIXED_DATE,
         chat=private_chat,
         from_user=User(id=ADMIN_ID, is_bot=False, first_name="A"),
         text="/ban 5",
@@ -423,7 +426,7 @@ async def test_start_works_in_private_chat(
     private_chat = Chat(id=1, type="private")
     msg = Message(
         message_id=1,
-        date=0,
+        date=FIXED_DATE,
         chat=private_chat,
         from_user=User(id=ADMIN_ID, is_bot=False, first_name="A"),
         text="/start",
@@ -442,7 +445,7 @@ async def test_promote_group_only_in_private(
     private_chat = Chat(id=1, type="private")
     msg = Message(
         message_id=1,
-        date=0,
+        date=FIXED_DATE,
         chat=private_chat,
         from_user=User(id=ADMIN_ID, is_bot=False, first_name="A"),
         text=f"/promote {TARGET_ID}",

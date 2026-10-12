@@ -8,6 +8,8 @@ makes, so assertions are about our decisions, not about HTTP.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import AsyncGenerator, Generator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -192,7 +194,7 @@ def fake_bot() -> FakeBot:
 
 
 @pytest.fixture
-async def db() -> Database:
+async def db() -> AsyncGenerator[Database, None]:
     """An in-memory database."""
     database = await Database.connect(":memory:")
     try:
@@ -211,3 +213,24 @@ def fake_clock() -> FakeClock:
 async def settings_service(db: Database, fake_clock: FakeClock) -> SettingsService:
     """A settings service over the in-memory database."""
     return SettingsService(db=db, clock=fake_clock)
+
+
+@pytest.fixture(autouse=True)
+def _detach_stale_log_handlers() -> Generator[None, None, None]:
+    """Keep a stray root log handler from breaking a later background thread.
+
+    ``configure_logging`` installs a handler on the global root logger. If a test
+    does that against pytest's capture stream and leaves it installed, a later
+    test whose aiosqlite worker thread logs through the root logger hits a closed
+    file ("Logging error" / ``PytestUnhandledThreadExceptionWarning``). Snapshot
+    and restore the root logger around every test so no handler outlives its
+    stream.
+    """
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    saved_level = root.level
+    try:
+        yield
+    finally:
+        root.handlers[:] = saved_handlers
+        root.setLevel(saved_level)

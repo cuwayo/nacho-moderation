@@ -16,21 +16,34 @@ env:
 
 jobs:
   lint:
-    name: lint (ruff, mypy)
+    name: lint (ruff)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: astral-sh/setup-uv@4db96194c378173c656ce18a155ffc14a9fc4355 # v5.2.2
         with:
           enable-cache: true
       - name: Install
         run: uv sync --all-groups
+      - name: uv lock is in sync
+        run: uv lock --check
       - name: ruff (lint)
         run: uv run ruff check .
       - name: ruff (format check)
         run: uv run ruff format --check .
-      - name: mypy (strict)
-        run: uv run mypy src
+
+  typecheck:
+    name: typecheck (mypy strict)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: astral-sh/setup-uv@4db96194c378173c656ce18a155ffc14a9fc4355 # v5.2.2
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --all-groups
+      - name: mypy (strict, src and tests)
+        run: uv run mypy
 
   test:
     name: test (${{ matrix.python }})
@@ -40,46 +53,67 @@ jobs:
       matrix:
         python: ["3.12"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: astral-sh/setup-uv@4db96194c378173c656ce18a155ffc14a9fc4355 # v5.2.2
         with:
           enable-cache: true
       - name: Install
         run: uv sync --all-groups --python ${{ matrix.python }}
-      - name: pytest
-        run: uv run pytest -q
+      - name: pytest (asyncio debug, warnings as errors)
+        run: |
+          PYTHONASYNCIODEBUG=1 uv run python -X dev -W error -m pytest -q
 
   coverage:
-    name: coverage
+    name: coverage (global 90% + per-module floors)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: astral-sh/setup-uv@4db96194c378173c656ce18a155ffc14a9fc4355 # v5.2.2
         with:
           enable-cache: true
       - name: Install
         run: uv sync --all-groups
-      - name: pytest with coverage (floor 85%)
-        run: uv run pytest --cov --cov-report=xml --cov-report=term
+      - name: pytest with coverage (global floor 90%)
+        run: uv run pytest --cov --cov-branch --cov-report=xml --cov-report=json --cov-report=term
+      - name: per-module coverage floors
+        run: uv run python scripts/check_coverage.py coverage.json
       - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: coverage
           path: coverage.xml
           if-no-files-found: warn
 
+  security:
+    name: security (pip-audit, secrets)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: astral-sh/setup-uv@4db96194c378173c656ce18a155ffc14a9fc4355 # v5.2.2
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --all-groups
+      - name: pip-audit (fail on known vulnerabilities)
+        run: uv run --with pip-audit pip-audit --strict
+      - name: detect-secrets
+        run: |
+          uv run --with detect-secrets detect-secrets scan --all-files \
+            --exclude-files '\.secrets\.baseline$' > /tmp/secrets.json
+          uv run --with detect-secrets detect-secrets-hook --baseline .secrets.baseline
+
   docs-lint:
     name: docs-lint (markdownlint, lychee)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
           node-version: "20"
       - name: markdownlint
         run: npx --yes markdownlint-cli2 "**/*.md"
       - name: lychee (internal links)
-        uses: lycheeverse/lychee-action@v2
+        uses: lycheeverse/lychee-action@1d97d84f0bc547f7b25f4c2170d87d810dc2fb2c # v2.4.0
         with:
           args: --offline --no-progress "README.md" "docs/**/*.md"
           fail: true
@@ -88,8 +122,8 @@ jobs:
     name: docs-smoke (README quick-start)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: astral-sh/setup-uv@4db96194c378173c656ce18a155ffc14a9fc4355 # v5.2.2
         with:
           enable-cache: true
       - name: Extract and run README quick-start (title="ci") snippets
@@ -103,12 +137,47 @@ jobs:
           PY
           bash /tmp/quickstart.sh
 
+  docs-consistency:
+    name: docs-consistency
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: astral-sh/setup-uv@4db96194c378173c656ce18a155ffc14a9fc4355 # v5.2.2
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --all-groups
+      - name: docs-consistency (command registry, config keys, links, tables)
+        run: uv run pytest tests/test_docs_consistency.py -q
+
+  docs-build:
+    name: docs-build (pdoc API reference)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: astral-sh/setup-uv@4db96194c378173c656ce18a155ffc14a9fc4355 # v5.2.2
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --all-groups
+      - name: Build the API reference (fails on warnings)
+        run: |
+          set -o pipefail
+          uv run pdoc nacho_moderator -o build/docs 2>&1 | tee /tmp/pdoc.log
+          ! grep -i "warning\|error" /tmp/pdoc.log
+      - name: Upload the API reference
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: api-docs
+          path: build/docs
+          if-no-files-found: error
+
   soak-smoke:
     name: soak-smoke (30s)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: astral-sh/setup-uv@4db96194c378173c656ce18a155ffc14a9fc4355 # v5.2.2
         with:
           enable-cache: true
       - name: Install
@@ -121,8 +190,8 @@ jobs:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: astral-sh/setup-uv@4db96194c378173c656ce18a155ffc14a9fc4355 # v5.2.2
         with:
           enable-cache: true
       - name: Install

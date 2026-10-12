@@ -7,10 +7,11 @@ or aiogram session is involved.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter, TelegramServerError
+from aiogram.methods import TelegramMethod
 
 from nacho_moderator.clock import FakeClock
 from nacho_moderator.constants import Bucket
@@ -35,6 +36,13 @@ def _middleware() -> tuple[RateLimitMiddleware, RateLimiter]:
     return RateLimitMiddleware(limiter), limiter
 
 
+async def _call(
+    mw: RateLimitMiddleware, make_request: Any, method: _Method, *, bot: Any = None
+) -> Any:
+    """Invoke the middleware with our fakes, cast to the typed signatures."""
+    return await mw(make_request, bot=cast("Any", bot), method=cast("TelegramMethod[Any]", method))
+
+
 async def test_successful_call_passes_through() -> None:
     mw, _ = _middleware()
     seen: list[str] = []
@@ -43,7 +51,7 @@ async def test_successful_call_passes_through() -> None:
         seen.append(method.__api_method__)
         return _Response()
 
-    result = await mw(make_request, bot=None, method=_Method("getMe"))
+    result = await _call(mw, make_request, _Method("getMe"))
     assert isinstance(result, _Response)
     assert seen == ["getMe"]
 
@@ -64,7 +72,7 @@ async def test_429_pauses_bucket_and_retries(monkeypatch: pytest.MonkeyPatch) ->
         sleeps.append(seconds)
 
     monkeypatch.setattr("nacho_moderator.transport.ratelimit.asyncio.sleep", fake_sleep)
-    result = await mw(make_request, bot=None, method=_Method("sendMessage", chat_id=5))
+    result = await _call(mw, make_request, _Method("sendMessage", chat_id=5))
     assert isinstance(result, _Response)
     assert len(attempts) == 2
     # The first sleep is the 429 pause.
@@ -85,7 +93,7 @@ async def test_server_error_retries_idempotent_method(monkeypatch: pytest.Monkey
         return None
 
     monkeypatch.setattr("nacho_moderator.transport.ratelimit.asyncio.sleep", fake_sleep)
-    await mw(make_request, bot=None, method=_Method("banChatMember", chat_id=5))
+    await _call(mw, make_request, _Method("banChatMember", chat_id=5))
     assert len(attempts) == 2
 
 
@@ -102,7 +110,7 @@ async def test_server_error_does_not_retry_non_idempotent(monkeypatch: pytest.Mo
 
     monkeypatch.setattr("nacho_moderator.transport.ratelimit.asyncio.sleep", fake_sleep)
     with pytest.raises(TelegramServerError):
-        await mw(make_request, bot=None, method=_Method("sendMessage", chat_id=5))
+        await _call(mw, make_request, _Method("sendMessage", chat_id=5))
     assert len(attempts) == 1  # sendMessage is not idempotent; no retry
 
 
@@ -119,7 +127,7 @@ async def test_network_error_retries_up_to_budget(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr("nacho_moderator.transport.ratelimit.asyncio.sleep", fake_sleep)
     with pytest.raises(TelegramNetworkError):
-        await mw(make_request, bot=None, method=_Method("getMe"))
+        await _call(mw, make_request, _Method("getMe"))
     assert len(attempts) == 6  # initial attempt + 5 retries
 
 
@@ -136,7 +144,7 @@ async def test_429_gives_up_after_max_retries(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr("nacho_moderator.transport.ratelimit.asyncio.sleep", fake_sleep)
     with pytest.raises(TelegramRetryAfter):
-        await mw(make_request, bot=None, method=_Method("getChatAdministrators", chat_id=5))
+        await _call(mw, make_request, _Method("getChatAdministrators", chat_id=5))
     from nacho_moderator.transport.ratelimit import MAX_429_RETRIES
 
     assert len(attempts) == MAX_429_RETRIES + 1
@@ -156,5 +164,5 @@ async def test_global_bucket_waits_when_exhausted(monkeypatch: pytest.MonkeyPatc
         return _Response()
 
     monkeypatch.setattr("nacho_moderator.transport.ratelimit.asyncio.sleep", fake_sleep)
-    await mw(make_request, bot=None, method=_Method("getMe"))
+    await _call(mw, make_request, _Method("getMe"))
     assert sleeps and sleeps[0] > 0

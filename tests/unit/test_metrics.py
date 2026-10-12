@@ -76,6 +76,24 @@ def test_snapshot_format_line_parses_back() -> None:
     assert fields["loop_lag_max_ms"] == "5.000"
 
 
+def test_metrics_dump_logs_a_line(caplog: pytest.LogCaptureFixture) -> None:
+    """dump() emits the structured summary at INFO."""
+    import logging
+
+    metrics = Metrics()
+    metrics.record_handler_latency(0.001)
+    with caplog.at_level(logging.INFO, logger="nacho_moderator.metrics"):
+        metrics.dump()
+    assert any("soak-metrics" in record.getMessage() for record in caplog.records)
+
+
+def test_metrics_snapshot_empty() -> None:
+    snap = Metrics().snapshot()
+    assert snap.latency_count == 0
+    assert snap.latency_p99_ms == 0.0
+    assert snap.loop_lag_max_ms == 0.0
+
+
 async def test_loop_lag_monitor_records_zero_when_on_time() -> None:
     """A sleep that advances the clock exactly is recorded as ~zero lag."""
     metrics = Metrics()

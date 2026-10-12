@@ -160,9 +160,9 @@ def check(
         failures.append(f"bot exited with code {exit_code}")
 
     # 2. The log must be free of tracebacks and un-awaited/retrieved task errors.
-    for pattern in _FAILURE_PATTERNS:
-        if pattern in bot_log:
-            failures.append(f"bot log contains {pattern!r}")
+    failures.extend(
+        f"bot log contains {pattern!r}" for pattern in _FAILURE_PATTERNS if pattern in bot_log
+    )
 
     # 3. Metrics must be present and within budget.
     metrics = parse_metrics(bot_log)

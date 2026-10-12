@@ -30,6 +30,10 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictNamespaces=yes
 LockPersonality=yes
 RemoveIPC=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
 UMask=0077
 
 # The bot writes only its SQLite database under /var/lib/nachomoderator.

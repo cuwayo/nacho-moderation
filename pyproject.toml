@@ -28,8 +28,14 @@ dev = [
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     "pytest-cov==7.1.0",
+    "pytest-randomly==5.0.0",
+    "pytest-timeout==2.4.0",
+    "pytest-xdist==3.8.0",
     "ruff==0.17.0",
     "mypy==2.4.0",
+    "pdoc==16.0.0",
+    "detect-secrets==1.5.0",
+    "pre-commit==4.6.2",
 ]
 
 [tool.uv]
@@ -42,23 +48,63 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
-    "F",   # pyflakes
-    "I",   # isort
-    "N",   # pep8-naming
-    "UP",  # pyupgrade
-    "B",   # flake8-bugbear
-    "C4",  # flake8-comprehensions
-    "SIM", # flake8-simplify
-    "RUF", # ruff-specific
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "N",     # pep8-naming
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "C4",    # flake8-comprehensions
+    "SIM",   # flake8-simplify
+    "RUF",   # ruff-specific
     "ASYNC", # flake8-async
-    "S",   # flake8-bandit (security)
+    "S",     # flake8-bandit (security)
+    "D",     # pydocstyle (Google convention)
+    "ANN",   # flake8-annotations
+    "PT",    # flake8-pytest-style
+    "PL",    # pylint
+    "PERF",  # perflint
+    "TRY",   # tryceratops
+    "ARG",   # flake8-unused-arguments
+    "ERA",   # eradicate (commented-out code)
+    "T20",   # flake8-print
+    "LOG",   # flake8-logging
+    "G",     # flake8-logging-format
+    "PTH",   # flake8-use-pathlib
+    "FBT",   # flake8-boolean-trap
 ]
-ignore = ["S101"] # asserts are fine in tests and for internal invariants
+# Each ignore below is deliberate and justified inline.
+ignore = [
+    "S101",     # asserts are fine in tests and for internal invariants
+    "ANN401",   # Any is deliberate at the aiogram/pydantic and test-double seams
+    "D107",     # __init__ is documented on the class, not repeated
+    "D203",     # conflicts with D211 (blank line before class docstring)
+    "D213",     # conflicts with D212 (multi-line summary placement)
+    "PLR2004",  # magic values in comparisons are clearer inline than as constants
+    "PLC0415",  # lazy imports break circular imports (registry <-> handlers)
+    "PLR0913",  # handlers legitimately take many keyword arguments
+    "PLR0917",  # ... and many positional/keyword parameters
+    "PLR0912",  # a few dispatch functions have many branches by design
+    "PLR0911",  # ... and early returns
+    "TRY003",   # long, specific error messages are intentional
+    "TRY301",   # raising inside try for validation is clearer than splitting
+    "FBT001",   # boolean positional params are fine on private/internal helpers
+    "T201",     # print is the CLI's user-facing output (and the mock server)
+    "ARG001",   # unused args satisfy callback/middleware interfaces
+    "ARG002",   # ... likewise on methods
+    "D105",     # magic methods are self-documenting
+]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S", "SLF001", "E501"]
+# Tests: security and docstring rules do not apply to test functions.
+"tests/**" = ["S", "SLF001", "E501", "D", "ANN", "PT018", "G"]
+# The mock server and scripts are standalone tools, not the package API.
+"scripts/**" = ["D", "T201", "ANN"]
+"tests/mock/**" = ["D", "T201", "ANN", "PTH"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
 [tool.ruff.lint.isort]
 known-first-party = ["nacho_moderator"]
@@ -69,18 +115,41 @@ strict = true
 warn_unreachable = true
 warn_unused_ignores = true
 disallow_untyped_decorators = false
-files = ["src"]
+files = ["src", "tests", "scripts"]
+mypy_path = "scripts"
 
 [[tool.mypy.overrides]]
 module = ["aiogram.*", "regex"]
 ignore_missing_imports = true
 
+# The scripts are standalone tools with a looser typing budget than the package.
+[[tool.mypy.overrides]]
+module = ["soak_check", "check_coverage"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+warn_return_any = false
+check_untyped_defs = true
+
+# Tests build fake objects that deliberately do not satisfy the real protocols.
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+warn_return_any = false
+check_untyped_defs = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Pin the fixture loop scope so pytest-asyncio does not warn (which -W error
+# would turn into an error under the asyncio-debug CI run).
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 addopts = "-q"
 pythonpath = ["."]
 filterwarnings = ["error"]
+# A hung test must fail rather than stall CI (P7).
+timeout = 30
+timeout_method = "thread"
 
 [tool.coverage.run]
 source = ["nacho_moderator"]
@@ -88,7 +157,7 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
-fail_under = 85
+fail_under = 90
 exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",

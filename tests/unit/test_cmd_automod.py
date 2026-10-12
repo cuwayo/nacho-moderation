@@ -124,3 +124,84 @@ async def test_captcha_rejects_other_args(
 ) -> None:
     await automod_cmds.cmd_captcha(_ctx(fake_bot, db, fake_clock, args="maybe"))
     assert "Usage" in fake_bot.texts()[-1]
+
+
+async def test_blacklist_no_args_shows_usage(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    await automod_cmds.cmd_blacklist(_ctx(fake_bot, db, fake_clock, args=""))
+    assert "Usage" in fake_bot.texts()[-1]
+
+
+async def test_blacklist_unknown_subcommand_shows_usage(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    await automod_cmds.cmd_blacklist(_ctx(fake_bot, db, fake_clock, args="frobnicate word"))
+    assert "Usage" in fake_bot.texts()[-1]
+
+
+async def test_blacklist_add_requires_argument(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    await automod_cmds.cmd_blacklist(_ctx(fake_bot, db, fake_clock, args="add"))
+    assert "Usage" in fake_bot.texts()[-1]
+
+
+async def test_blacklist_list_marks_regex(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    await db.blacklist_add(CHAT_ID, "badword", is_regex=False)
+    await db.blacklist_add(CHAT_ID, r"sp\w+", is_regex=True)
+    await automod_cmds.cmd_blacklist(_ctx(fake_bot, db, fake_clock, args="list"))
+    text = fake_bot.texts()[-1]
+    assert "Blacklist (2):" in text
+    assert "(regex)" in text
+
+
+async def test_blacklist_del_missing_pattern(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    await automod_cmds.cmd_blacklist(_ctx(fake_bot, db, fake_clock, args="del ghost"))
+    assert "not on the blacklist" in fake_bot.texts()[-1]
+
+
+async def test_blacklist_add_invalidates_cache(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    automod = AutomodService(db=db, clock=fake_clock)
+    # Prime the cache while the blacklist is empty.
+    assert automod._blacklist.get(str(CHAT_ID)) is None
+    await automod._blacklist_patterns(CHAT_ID)
+    assert automod._blacklist.get(str(CHAT_ID)) == []
+    await automod_cmds.cmd_blacklist(
+        _ctx(fake_bot, db, fake_clock, args="add badword", automod=automod)
+    )
+    # cmd_blacklist must have dropped the cache entry...
+    assert automod._blacklist.get(str(CHAT_ID)) is None
+    # ...so the next read re-fetches and sees the new pattern.
+    entries = await automod._blacklist_patterns(CHAT_ID)
+    assert [e.pattern for e in entries] == ["badword"]
+
+
+async def test_blacklist_add_without_automod_still_succeeds(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    # automod=None exercises the _invalidate no-op branch.
+    await automod_cmds.cmd_blacklist(_ctx(fake_bot, db, fake_clock, args="add badword"))
+    assert "Added" in fake_bot.texts()[-1]
+
+
+async def test_antiflood_off(fake_bot: FakeBot, db: Database, fake_clock: FakeClock) -> None:
+    await db.set_setting(CHAT_ID, "flood_limit", 5)
+    await automod_cmds.cmd_antiflood(_ctx(fake_bot, db, fake_clock, args="off"))
+    assert (await db.get_settings(CHAT_ID)).flood_limit == 0
+    assert "disabled" in fake_bot.texts()[-1]
+
+
+async def test_antiflood_rejects_zero_values(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    await db.set_setting(CHAT_ID, "flood_limit", 5)
+    await automod_cmds.cmd_antiflood(_ctx(fake_bot, db, fake_clock, args="0 10"))
+    assert "Usage" in fake_bot.texts()[-1]
+    assert (await db.get_settings(CHAT_ID)).flood_limit == 5

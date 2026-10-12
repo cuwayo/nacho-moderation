@@ -8,7 +8,6 @@ it is skipped entirely for environment-only configuration. The
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -138,5 +137,5 @@ def test_insecure_message_names_the_path(tmp_path: Path) -> None:
 def test_no_check_on_windows_style_modes(tmp_path: Path) -> None:
     """Sanity: a 0600 file on a system without other users still passes."""
     path = _write(tmp_path, _SECRET_CONFIG, 0o600)
-    assert os.stat(path).st_mode & 0o077 == 0
+    assert path.stat().st_mode & 0o077 == 0
     load_settings(path, environ={})

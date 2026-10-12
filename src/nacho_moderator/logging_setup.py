@@ -1,4 +1,4 @@
-"""Structured line logging to stderr with token/secret redaction.
+r"""Structured line logging to stderr with token/secret redaction.
 
 The format is ``ts level module message``. Redaction happens in a custom
 :class:`logging.Formatter` that rewrites the *final* rendered string, so it also
@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import re
 import sys
+from typing import Any
 from urllib.parse import quote
 
 from nacho_moderator.config import LogLevelName
@@ -125,13 +126,29 @@ class RedactingFormatter(logging.Formatter):
         return redact(super().format(record))
 
 
+class SafeStreamHandler(logging.StreamHandler[Any]):
+    """A stream handler that drops a record instead of raising.
+
+    ``logging.StreamHandler.emit`` lets a write failure propagate, which prints a
+    "--- Logging error ---" traceback to stderr and, on a background thread, can
+    surface as an unhandled-thread-exception warning. The bot logs from the
+    aiosqlite worker thread and from asyncio callbacks, so a handler must never
+    raise. A closed or unwritable stream is silently ignored (the same behaviour
+    ``logging.raiseExceptions`` gives, but without the stderr noise).
+    """
+
+    def handleError(self, record: logging.LogRecord) -> None:  # noqa: N802 - logging's API name
+        """Swallow a formatting or write failure (never raise)."""
+        return
+
+
 def configure_logging(level: LogLevelName) -> None:
     """Install the stderr handler and level for the whole process.
 
     Args:
         level: The desired verbosity.
     """
-    handler = logging.StreamHandler(sys.stderr)
+    handler = SafeStreamHandler(sys.stderr)
     handler.setFormatter(RedactingFormatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
 
     root = logging.getLogger()

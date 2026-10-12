@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from nacho_moderator.clock import FakeClock
 from nacho_moderator.constants import Right, Role
@@ -74,7 +75,7 @@ async def test_concurrent_lookups_share_one_fetch(fake_clock: FakeClock) -> None
     calls: list[int] = []
 
     class SlowBot:
-        async def get_chat_administrators(self, chat_id: int) -> list:
+        async def get_chat_administrators(self, chat_id: int) -> list[Any]:
             calls.append(chat_id)
             started.set()
             await release.wait()
@@ -95,7 +96,7 @@ async def test_invalidate_during_fetch_does_not_cache_stale(fake_clock: FakeCloc
     calls: list[int] = []
 
     class SlowBot:
-        async def get_chat_administrators(self, chat_id: int) -> list:
+        async def get_chat_administrators(self, chat_id: int) -> list[Any]:
             calls.append(chat_id)
             if len(calls) == 1:
                 await release.wait()

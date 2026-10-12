@@ -112,3 +112,27 @@ async def test_record_action_posts_to_log_channel(
     assert logs
     assert "action=ban" in logs[0].kwargs["text"]
     assert "spammer" in logs[0].kwargs["text"]
+
+
+async def test_render_panel_text_returns_title(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    ctx = _ctx(fake_bot, db, fake_clock)
+    assert await settings_cmds.render_panel_text(ctx) == settings_cmds.PANEL_TITLE
+
+
+async def test_setrules_requires_text(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    await settings_cmds.cmd_setrules(_ctx(fake_bot, db, fake_clock, args=""))
+    assert "Usage" in fake_bot.texts()[-1]
+    assert (await db.get_settings(CHAT_ID)).rules_text == ""
+
+
+async def test_reload_without_invalidator_still_replies(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    # invalidate_admins defaults to None, so the callable() guard is exercised.
+    ctx = _ctx(fake_bot, db, fake_clock)
+    await settings_cmds.cmd_reload(ctx)
+    assert "refreshed" in fake_bot.texts()[-1]

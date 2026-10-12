@@ -133,6 +133,15 @@ async def test_pin(fake_bot: FakeBot, db: Database, fake_clock: FakeClock) -> No
     assert fake_bot.called("pin_chat_message")[0].kwargs["message_id"] == 10
 
 
+async def test_pin_without_reply_replies_usage(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    ctx = _ctx(fake_bot, db, fake_clock)
+    await moderation.cmd_pin(ctx)
+    assert fake_bot.called("pin_chat_message") == []
+    assert "Reply to a message" in fake_bot.texts()[-1]
+
+
 async def test_unpin(fake_bot: FakeBot, db: Database, fake_clock: FakeClock) -> None:
     ctx = _ctx(fake_bot, db, fake_clock)
     await moderation.cmd_unpin(ctx)
@@ -165,3 +174,87 @@ async def test_purge_over_batch_size_splits(
     batches = fake_bot.called("delete_messages")
     assert len(batches) == 3  # 250 ids -> 100 + 100 + 50
     assert sum(len(b.kwargs["message_ids"]) for b in batches) == 250
+
+
+async def test_purge_without_reply_replies_usage(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    ctx = _ctx(fake_bot, db, fake_clock)
+    await moderation.cmd_purge(ctx)
+    assert fake_bot.called("delete_messages") == []
+    assert "Reply to a message" in fake_bot.texts()[-1]
+
+
+async def test_purge_batch_failure_replies_that_failed(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    fake_bot.fail.add("delete_messages")
+    reply = message(10, text="spam", user_id=TARGET_ID)
+    ctx = _ctx(fake_bot, db, fake_clock, reply_to=reply)
+    await moderation.cmd_purge(ctx)
+    assert fake_bot.texts()[-1] == "That failed."
+
+
+async def test_unban_without_target_replies_usage(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    ctx = _ctx(fake_bot, db, fake_clock, target_id=None)
+    await moderation.cmd_unban(ctx)
+    assert fake_bot.called("unban_chat_member") == []
+    assert "Reply to a user" in fake_bot.texts()[-1]
+
+
+async def test_kick_without_target_replies_usage(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    ctx = _ctx(fake_bot, db, fake_clock, target_id=None)
+    await moderation.cmd_kick(ctx)
+    assert fake_bot.called("ban_chat_member") == []
+    assert "Reply to a user" in fake_bot.texts()[-1]
+
+
+async def test_mute_without_target_replies_usage(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    ctx = _ctx(fake_bot, db, fake_clock, target_id=None)
+    await moderation.cmd_mute(ctx)
+    assert fake_bot.called("restrict_chat_member") == []
+    assert "Reply to a user" in fake_bot.texts()[-1]
+
+
+async def test_unmute_without_target_replies_usage(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    ctx = _ctx(fake_bot, db, fake_clock, target_id=None)
+    await moderation.cmd_unmute(ctx)
+    assert fake_bot.called("restrict_chat_member") == []
+    assert "Reply to a user" in fake_bot.texts()[-1]
+
+
+async def test_kick_parses_reason(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock, monkeypatch
+) -> None:
+    recorded: list[tuple[str, str]] = []
+
+    async def _spy(action, target_id, reason, created_at, expires_at, target_label=""):
+        recorded.append((action, reason))
+
+    ctx = _ctx(fake_bot, db, fake_clock, args="being disruptive")
+    monkeypatch.setattr(ctx, "record_action", _spy)
+    await moderation.cmd_kick(ctx)
+    assert recorded == [("kick", "being disruptive")]
+
+
+async def test_kick_parses_duration_then_reason(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock, monkeypatch
+) -> None:
+    recorded: list[tuple[str, str]] = []
+
+    async def _spy(action, target_id, reason, created_at, expires_at, target_label=""):
+        recorded.append((action, reason))
+
+    ctx = _ctx(fake_bot, db, fake_clock, args="10m spamming")
+    monkeypatch.setattr(ctx, "record_action", _spy)
+    await moderation.cmd_kick(ctx)
+    # The duration token is consumed; the remaining text is the reason.
+    assert recorded == [("kick", "spamming")]

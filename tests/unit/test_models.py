@@ -36,6 +36,12 @@ def test_parse_duration_rejects_overflow() -> None:
         parse_duration("99999999999999999999999w")
 
 
+def test_parse_duration_rejects_overflow_after_multiplier() -> None:
+    """A value that fits but overflows once the unit multiplier applies."""
+    with pytest.raises(ParseError):
+        parse_duration("9223372036854775807m")
+
+
 def test_html_escape_only_markup_chars() -> None:
     assert html_escape("<b>&</b>") == "&lt;b&gt;&amp;&lt;/b&gt;"
     assert html_escape("héllo") == "héllo"
