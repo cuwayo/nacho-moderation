@@ -15,7 +15,7 @@ uv run pytest tests/unit/test_cmd_moderation.py -v
 
 ## Layout
 
-```
+```text
 tests/
   conftest.py        # fixtures: in-memory db, fake clock, FakeBot, fake admins
   helpers.py         # builders for messages and command contexts
@@ -34,7 +34,7 @@ tests/
 ## What is covered
 
 | Area | File |
-|---|---|
+| --- | --- |
 | Duration parsing, HTML escaping | `test_models.py` |
 | Token buckets, retry policy, backoff | `test_transport.py` |
 | Rate-limit/retry session middleware | `test_ratelimit_middleware.py` |

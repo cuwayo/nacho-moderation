@@ -71,7 +71,7 @@ The most important keys (full reference in
 [`docs/configuration.md`](docs/configuration.md)):
 
 | Key | Default | Description |
-|---|---|---|
+| --- | --- | --- |
 | `bot_token` | *(required)* | BotFather token; never logged. |
 | `mode` | `polling` | `polling` or `webhook`. |
 | `db.path` | `./bot.db` | SQLite database file. |
@@ -83,7 +83,7 @@ The most important keys (full reference in
 See [`docs/commands.md`](docs/commands.md) for the full reference.
 
 | Command | Role | Description |
-|---|---|---|
+| --- | --- | --- |
 | `/help` | anyone | Show available commands. |
 | `/ban` `/unban` `/kick` `/mute` `/unmute` | admin | Moderation. |
 | `/del` `/pin` `/unpin` `/purge` | admin | Message management. |
@@ -114,7 +114,7 @@ See [`docs/testing.md`](docs/testing.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md
 
 ## Project layout
 
-```
+```text
 src/nacho_moderator/   the bot package
   commands/            the command registry and handlers
   services/            perms, settings, automod, captcha, expiry, welcome

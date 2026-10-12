@@ -28,7 +28,7 @@ result back to the event loop, so the loop is never blocked.
 ## Module map
 
 | Module | Responsibility |
-|---|---|
+| --- | --- |
 | `config` | Load and validate `config.toml`, environment, and CLI overrides. |
 | `logging_setup` | Structured stderr logging with bot-token redaction. |
 | `clock` | Injectable wall-clock/monotonic clock and random source. |

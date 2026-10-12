@@ -14,7 +14,7 @@ rejected.
 ## Keys
 
 | Key | Env var | Type | Default | Description |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `bot_token` | `BOT_TOKEN` | string | *(required)* | Telegram bot token issued by BotFather. Never logged. |
 | `mode` | `MODE` | enum | `polling` | Update source: `polling` or `webhook`. |
 | `sudo_ids` | `SUDO_IDS` | int list | *(empty)* | Comma-separated user ids granted bot-level sudo. |

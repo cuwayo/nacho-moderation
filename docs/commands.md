@@ -12,7 +12,7 @@ action is permanent. Trailing free text is the reason.
 ## Moderation
 
 | Command | Usage | Role | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `/ban` | `[target] [duration] [reason]` | admin | Ban a user; a duration makes it temporary. |
 | `/unban` | `[target]` | admin | Lift a ban. |
 | `/kick` | `[target] [reason]` | admin | Remove a user so they can rejoin. |
@@ -26,7 +26,7 @@ action is permanent. Trailing free text is the reason.
 ## Warnings
 
 | Command | Usage | Role | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `/warn` | `[target] [reason]` | admin | Add a warning; auto-act at the limit. |
 | `/unwarn` | `[target]` | admin | Remove the newest warning. |
 | `/warns` | `[target]` | anyone | List your warnings, or a user's (admins). |
@@ -37,7 +37,7 @@ action is permanent. Trailing free text is the reason.
 ## Settings, welcome, rules
 
 | Command | Usage | Role | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `/settings` | | admin | Open the inline settings panel. |
 | `/setwelcome` | `<text>` | admin | Set the join welcome (`{first}` `{mention}` `{chat}` `{count}`). |
 | `/welcome` | `on\|off` | admin | Enable or disable the join welcome. |
@@ -49,7 +49,7 @@ action is permanent. Trailing free text is the reason.
 ## Automod
 
 | Command | Usage | Role | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `/lock` | `<type> [type...]` | admin | Lock a message type (delete + log). |
 | `/unlock` | `<type> [type...]` | admin | Unlock a message type. |
 | `/blacklist` | `add\|del\|list <word\|/regex/>` | admin | Manage the word/regex blacklist. |
@@ -62,7 +62,7 @@ Lock types: `links`, `media`, `stickers`, `forwards`, `polls`, `invites`, `bots`
 ## Other
 
 | Command | Role | Description |
-|---|---|---|
+| --- | --- | --- |
 | `/help` | anyone | Show available commands. |
 
 ## Edge cases
