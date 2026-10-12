@@ -103,8 +103,21 @@ jobs:
           PY
           bash /tmp/quickstart.sh
 
+  soak-smoke:
+    name: soak-smoke (30s)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --all-groups
+      - name: Soak smoke (30 s, asyncio debug)
+        run: bash scripts/run_soak.sh smoke
+
   nightly-soak:
-    name: nightly-soak
+    name: nightly-soak (10 min)
     if: github.event_name == 'schedule'
     runs-on: ubuntu-24.04
     steps:
@@ -114,5 +127,5 @@ jobs:
           enable-cache: true
       - name: Install
         run: uv sync --all-groups
-      - name: Soak test (short)
-        run: bash scripts/run_soak.sh 120 200
+      - name: Soak (nightly)
+        run: bash scripts/run_soak.sh nightly --seconds 600 --rate 1000

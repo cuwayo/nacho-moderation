@@ -1,20 +1,58 @@
 #!/usr/bin/env bash
 # run_soak.sh - replay a sustained update load against the mock Bot API server
-# and check the bot stays healthy (no crash, bounded RSS growth).
+# and check the bot stays healthy.
 #
-# Usage: scripts/run_soak.sh [seconds] [rate]
-#   seconds  duration of the soak (default: 60)
-#   rate     updates per second the mock feeds (default: 200)
+# Usage: scripts/run_soak.sh [mode] [--seconds N] [--rate R]
+#   mode       "smoke" (30 s, every PR) or "nightly" (600 s @ 1000/s, default)
 #
-# The mock server's --soak mode queues synthetic supergroup messages; the bot's
-# getUpdates long-poll drains them. The script runs the real bot against the mock
-# and samples RSS and open file descriptors, failing on unbounded growth.
+# Environment overrides:
+#   SOAK_SECONDS, SOAK_RATE, SOAK_MIN_CALLS
+#
+# The bot's getUpdates long-poll drains synthetic messages queued by the mock's
+# --soak mode. The bot records per-update handler latency and event-loop lag in
+# a histogram and logs a `soak-metrics ...` summary on shutdown (and on SIGUSR1).
+# This script samples RSS and FD count every 5 s, then hands the artifacts to
+# scripts/soak_check.py, which owns the pass/fail thresholds.
 
 set -euo pipefail
 
-SECONDS_TO_RUN="${1:-${SOAK_SECONDS:-60}}"
-RATE="${2:-${SOAK_RATE:-200}}"
-RSS_GROWTH_PCT="${SOAK_RSS_GROWTH_PCT:-15}"
+MODE="${1:-nightly}"
+shift || true
+
+SECONDS_TO_RUN="${SOAK_SECONDS:-}"
+RATE="${SOAK_RATE:-}"
+MIN_CALLS="${SOAK_MIN_CALLS:-1}"
+
+# Parse optional --seconds/--rate overrides.
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --seconds) SECONDS_TO_RUN="$2"; shift 2 ;;
+    --rate) RATE="$2"; shift 2 ;;
+    --min-calls) MIN_CALLS="$2"; shift 2 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+# Mode defaults: the smoke mode is short and uses asyncio debug to catch slow
+# callbacks and unclosed resources; the nightly run is the full load.
+DEBUG_ENV=()
+case "$MODE" in
+  smoke)
+    SECONDS_TO_RUN="${SECONDS_TO_RUN:-30}"
+    RATE="${RATE:-1000}"
+    DEBUG_ENV=(PYTHONASYNCIODEBUG=1)
+    PYTHON_DEBUG_FLAGS=(-X dev -W error::ResourceWarning)
+    ;;
+  nightly)
+    SECONDS_TO_RUN="${SECONDS_TO_RUN:-600}"
+    RATE="${RATE:-1000}"
+    PYTHON_DEBUG_FLAGS=()
+    ;;
+  *)
+    echo "unknown mode: $MODE (expected 'smoke' or 'nightly')" >&2
+    exit 2
+    ;;
+esac
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -28,14 +66,36 @@ with socket.socket() as s:
 PY
 }
 
+WORKDIR="$(mktemp -d)"
 PORT="$(free_port)"
-LOG="$(mktemp)"
-CALLS="$(mktemp)"
-trap 'rm -f "$LOG" "$CALLS"' EXIT
+LOG="$WORKDIR/bot.log"
+CALLS="$WORKDIR/calls.jsonl"
+SAMPLES="$WORKDIR/samples.txt"
+CONFIG="$WORKDIR/config.toml"
+trap 'rm -rf "$WORKDIR"' EXIT
 
-echo "soak: starting mock Bot API server on 127.0.0.1:${PORT} (${SECONDS_TO_RUN}s @ ${RATE}/s)"
+DB="$WORKDIR/bot.db"
+cat >"$CONFIG" <<EOF
+bot_token = "123456:TEST"
+mode = "polling"
+
+[api]
+base = "http://127.0.0.1:${PORT}"
+
+[db]
+path = "${DB}"
+
+[polling]
+timeout = 1
+
+[log]
+level = "info"
+EOF
+chmod 600 "$CONFIG"
+
+echo "soak: mode=$MODE ${SECONDS_TO_RUN}s @ ${RATE}/s (min calls ${MIN_CALLS})"
 python3 tests/mock/mock_tg_server.py --port "$PORT" --soak "$((SECONDS_TO_RUN + 30))" --rate "$RATE" \
-  --log "$CALLS" >"$LOG" 2>&1 &
+  --log "$CALLS" >"$WORKDIR/mock.log" 2>&1 &
 MOCK_PID=$!
 
 # Wait for the mock to accept connections.
@@ -53,52 +113,46 @@ PY
   sleep 0.1
 done
 
-export MODE=polling
-export API_BASE="http://127.0.0.1:${PORT}"
-export BOT_TOKEN="123456:TEST"
-export DB_PATH="$(mktemp -u)"
-export SUDO_IDS=""
-export LOG_LEVEL=info
-
 echo "soak: starting bot"
-uv run nacho-moderator >"$LOG.bot" 2>&1 &
+env "${DEBUG_ENV[@]}" uv run python "${PYTHON_DEBUG_FLAGS[@]}" -m nacho_moderator --config "$CONFIG" \
+  >"$LOG" 2>&1 &
 BOT_PID=$!
 
-sample_rss() { awk '/VmRSS/{print $2}' "/proc/$BOT_PID/status" 2>/dev/null || echo 0; }
-sample_fds() { ls "/proc/$BOT_PID/fd" 2>/dev/null | wc -l || echo 0; }
+sample() {
+  local rss fds
+  rss="$(awk '/VmRSS/{print $2}' "/proc/$BOT_PID/status" 2>/dev/null || echo 0)"
+  fds="$(ls "/proc/$BOT_PID/fd" 2>/dev/null | wc -l || echo 0)"
+  echo "${rss:-0} ${fds:-0}" >>"$SAMPLES"
+}
 
-sleep 5
-FIRST_RSS="$(sample_rss)"
-FIRST_FDS="$(sample_fds)"
-sleep "$SECONDS_TO_RUN"
-LAST_RSS="$(sample_rss)"
-LAST_FDS="$(sample_fds)"
+# Wait for the bot to open its DB (rough proxy for "up"), then sample every 5 s.
+sleep 2
+ELAPSED=0
+while [ "$ELAPSED" -lt "$SECONDS_TO_RUN" ]; do
+  sample
+  sleep 5
+  ELAPSED=$((ELAPSED + 5))
+  if ! kill -0 "$BOT_PID" 2>/dev/null; then break; fi
+done
+sample
 
-if ! kill -0 "$BOT_PID" 2>/dev/null; then
-  echo "soak: FAIL - the bot exited during the soak" >&2
-  cat "$LOG.bot" >&2 || true
-  kill "$MOCK_PID" 2>/dev/null || true
-  exit 1
+BOT_EXIT=0
+if kill -0 "$BOT_PID" 2>/dev/null; then
+  # Ask for a metrics dump, then terminate.
+  kill -USR1 "$BOT_PID" 2>/dev/null || true
+  sleep 1
+  kill -TERM "$BOT_PID" 2>/dev/null || true
 fi
-
-kill -TERM "$BOT_PID" 2>/dev/null || true
-wait "$BOT_PID" 2>/dev/null || true
+wait "$BOT_PID" || BOT_EXIT=$?
 kill "$MOCK_PID" 2>/dev/null || true
+wait "$MOCK_PID" 2>/dev/null || true
 
 CALL_COUNT="$(wc -l < "$CALLS" 2>/dev/null || echo 0)"
-echo "soak: ${CALL_COUNT} API calls recorded; RSS ${FIRST_RSS}kB -> ${LAST_RSS}kB; FDs ${FIRST_FDS} -> ${LAST_FDS}"
+echo "soak: ${CALL_COUNT} API calls recorded; $(wc -l < "$SAMPLES") samples"
 
-if [ "$FIRST_RSS" -gt 0 ]; then
-  GROWTH=$(( (LAST_RSS - FIRST_RSS) * 100 / FIRST_RSS ))
-  if [ "$GROWTH" -gt "$RSS_GROWTH_PCT" ]; then
-    echo "soak: FAIL - RSS grew ${GROWTH}% (> ${RSS_GROWTH_PCT}%)" >&2
-    exit 1
-  fi
-fi
-
-if [ "$CALL_COUNT" -eq 0 ]; then
-  echo "soak: FAIL - no API calls were recorded" >&2
-  exit 1
-fi
-
-echo "soak: PASS"
+uv run python scripts/soak_check.py \
+  --bot-log "$LOG" \
+  --samples "$SAMPLES" \
+  --calls "$CALLS" \
+  --exit-code "$BOT_EXIT" \
+  --min-calls "$MIN_CALLS"

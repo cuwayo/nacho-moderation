@@ -47,6 +47,7 @@ result back to the event loop, so the loop is never blocked.
 | `commands/*` | One module per command group; the handlers. |
 | `router` | Command parsing, target resolution, and permission gating. |
 | `handlers` | aiogram wiring: middleware, dispatch, joins, callbacks. |
+| `metrics` | Handler-latency and event-loop-lag histograms; SIGUSR1 dump for the soak test. |
 | `webhook` | The aiohttp app and the secret check. |
 | `main` | Entry point: config, wiring, polling/webhook, graceful shutdown. |
 

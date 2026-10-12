@@ -57,6 +57,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as `/help` and is the only command besides `/help` that works in private chats.
   The registry now holds 31 commands.
 
+- **Soak test with real health gates.** The bot now records per-update handler
+  latency and event-loop lag in bounded histograms, dumped as one `soak-metrics`
+  line on `SIGUSR1` and at shutdown. `scripts/run_soak.sh` has a 30-second smoke
+  mode (every PR, with `PYTHONASYNCIODEBUG=1 -X dev -W error::ResourceWarning`)
+  and a 600-second nightly mode; it samples RSS and FD count every 5 seconds and
+  fails on a p99 latency above 50 ms, loop lag above 100 ms
+  ([ADR 0002](docs/adr/0002-python-loop-lag-budget.md)), RSS growth above 10 %
+  after a 60 s warm-up, a rising FD count, any traceback or un-awaited-task
+  warning, or a non-zero exit. The pass/fail logic is `scripts/soak_check.py`,
+  unit-tested against fixture logs.
+
 - Feature-parity port of the C bot:
   - 28 commands across moderation, warnings, per-chat settings, welcome/rules,
     and automod, driven by a single command registry that produces both `/help`

@@ -37,6 +37,7 @@ from nacho_moderator.db import Database
 from nacho_moderator.errors import ConfigError
 from nacho_moderator.handlers import App, build_dispatcher
 from nacho_moderator.logging_setup import configure_logging, get_logger, register_secret
+from nacho_moderator.metrics import LoopLagMonitor, Metrics
 from nacho_moderator.services.automod import AutomodService
 from nacho_moderator.services.captcha import CaptchaService
 from nacho_moderator.services.expiry import CaptchaSweeper, ExpirySweeper
@@ -90,6 +91,7 @@ async def build_app(config: Settings, bot: Bot) -> App:
         clock=clock,
         bot_username=me.username,
         bot_id=me.id,
+        metrics=Metrics(),
     )
     build_dispatcher(app)
     return app
@@ -138,6 +140,36 @@ def _install_signal_handlers(stop: asyncio.Event) -> None:
             loop.add_signal_handler(sig, stop.set)
 
 
+def _install_metrics_dump(metrics: Metrics) -> None:
+    """Wire SIGUSR1 to dump the metrics summary (best effort)."""
+    loop = asyncio.get_running_loop()
+    with contextlib.suppress(NotImplementedError, AttributeError, ValueError):
+        loop.add_signal_handler(signal.SIGUSR1, metrics.dump)
+
+
+def _clear_aiogram_caches() -> None:
+    """Drop aiogram's ``lru_cache``d properties before interpreter teardown.
+
+    ``aiogram.types.Update.event_type`` is a ``property`` wrapping
+    ``lru_cache()``. A cached ``Update`` that survives to interpreter
+    finalization makes CPython's ``type_clear`` -> ``property_dealloc`` ->
+    ``lru_cache_dealloc`` walk into ``pydantic_core`` and segfault under the
+    debug allocator (``PYTHONDEVMODE`` / ``-X dev``). Clearing the cache at
+    shutdown releases those objects while the interpreter is still healthy. It
+    is a no-op when the cache is empty and harmless in production.
+    """
+    try:
+        from aiogram.types import Update
+
+        # aiogram exposes event_type as a property over an lru_cache; reach the
+        # descriptor through the class __dict__ (mypy otherwise sees the getter).
+        descriptor = Update.__dict__["event_type"]
+        cache_clear = getattr(descriptor.fget, "cache_clear")
+        cache_clear()
+    except Exception:  # pragma: no cover - defensive; never fatal at shutdown
+        _log.debug("could not clear aiogram caches", exc_info=True)
+
+
 async def run_bot(config: Settings) -> int:
     """Run the bot until it is asked to stop."""
     bot = build_bot(config)
@@ -148,16 +180,27 @@ async def run_bot(config: Settings) -> int:
 
     stop = asyncio.Event()
     _install_signal_handlers(stop)
+    lag_monitor: LoopLagMonitor | None = None
+    if app.metrics is not None:
+        lag_monitor = LoopLagMonitor(app.metrics, app.clock)
+        lag_monitor.start()
+        _install_metrics_dump(app.metrics)
     try:
         if config.mode is Mode.WEBHOOK:
             await _run_webhook(app, stop)
         else:
             await _run_polling(app, stop)
     finally:
+        if lag_monitor is not None:
+            await lag_monitor.stop()
+        if app.metrics is not None:
+            # Dump the final summary so the soak harness can read it from the log.
+            app.metrics.dump()
         await app.expiry.stop()
         await app.captcha_sweeper.stop()
         await app.db.close()
         await bot.session.close()
+        _clear_aiogram_caches()
         _log.info("stopped")
     return 0
 

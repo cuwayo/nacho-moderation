@@ -30,6 +30,7 @@ from nacho_moderator.constants import CommandFlag, Right, Role
 from nacho_moderator.db import Database
 from nacho_moderator.errors import BotLacksRightError, PermissionDeniedError
 from nacho_moderator.logging_setup import get_logger
+from nacho_moderator.metrics import Metrics
 from nacho_moderator.router import (
     check_permission,
     parse_command,
@@ -76,6 +77,34 @@ class App:
     clock: Clock
     bot_username: str | None = None
     bot_id: int = 0
+    #: Runtime health metrics (handler latency, loop lag); optional so tests that
+    #: build a bare App do not have to supply one.
+    metrics: Metrics | None = None
+
+
+class LatencyMiddleware:
+    """Time every update through the dispatcher and record it.
+
+    Registered as an outermost update middleware so the measurement covers the
+    whole handler chain (context resolution, automod, and the command handler).
+    """
+
+    def __init__(self, metrics: Metrics, clock: Clock) -> None:
+        self._metrics = metrics
+        self._clock = clock
+
+    async def __call__(
+        self,
+        handler: Any,
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        """Run the handler and record how long it took."""
+        started = self._clock.monotonic()
+        try:
+            return await handler(event, data)
+        finally:
+            self._metrics.record_handler_latency(self._clock.monotonic() - started)
 
 
 class ContextMiddleware:
@@ -408,6 +437,8 @@ async def _toggle_welcome(app: App, query: CallbackQuery, chat_id: int) -> None:
 def build_dispatcher(app: App) -> Dispatcher:
     """Register all middlewares, handlers, and lifecycle hooks on the dispatcher."""
     dp = app.dp
+    if app.metrics is not None:
+        dp.update.outer_middleware(LatencyMiddleware(app.metrics, app.clock))
     context_mw = ContextMiddleware(app)
     dp.message.outer_middleware(context_mw)
     # Register the bound async methods: aiogram only awaits callbacks it can
