@@ -207,8 +207,10 @@ jobs:
           enable-cache: true
       - name: Install
         run: uv sync --all-groups
-      - name: Soak smoke (30 s, asyncio debug)
+      - name: Soak smoke (30 s @ 1000/s, production flags; full timing gate)
         run: bash scripts/run_soak.sh smoke
+      - name: Soak hygiene (asyncio debug; tracebacks, un-awaited, resources)
+        run: bash scripts/run_soak.sh hygiene
 
   nightly-soak:
     name: nightly-soak (10 min)

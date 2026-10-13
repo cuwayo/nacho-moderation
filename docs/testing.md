@@ -118,6 +118,12 @@ It supports scripted scenarios (`tests/mock/scenarios/*.json`) and fault
 injection (429 with `retry_after`, 5xx, malformed JSON, connection reset), and
 records every received call as JSONL.
 
+With `--soak SECONDS` a background feeder queues synthetic updates at `--rate`/s
+for that long; each `getUpdates` serves up to `--soak-batch` of them (default
+100). The pending queue is capped at `SOAK_MAX_BACKLOG_SECONDS` (5 s) of backlog
+at the requested rate, so a bot that cannot keep up has its oldest queued updates
+dropped (with a warning) rather than growing the queue without limit.
+
 ## Coverage
 
 `uv run pytest --cov` reports line and branch coverage and fails below the
@@ -155,25 +161,43 @@ clock. CI randomizes the `hypothesis` seed.
 update feed and checks that it stays healthy. Two modes:
 
 ```sh
-bash scripts/run_soak.sh smoke      # 30 s @ 1000/s, runs on every PR
-bash scripts/run_soak.sh nightly    # 600 s @ 1000/s, runs nightly
+bash scripts/run_soak.sh smoke      # 30 s @ 1000/s, production flags, full gate (every PR)
+bash scripts/run_soak.sh nightly    # 600 s @ 1000/s, production flags, full gate
+bash scripts/run_soak.sh hygiene    # 30 s, PYTHONASYNCIODEBUG + -X dev; hygiene only
 ```
 
-The smoke mode additionally runs the bot with `PYTHONASYNCIODEBUG=1`,
-`-X dev`, and `-W error::ResourceWarning`, so a slow callback or an unclosed
-resource fails the run.
+Timing budgets (handler latency, loop lag) are only meaningful with production
+flags: `PYTHONASYNCIODEBUG` and `-X dev` inflate them by an order of magnitude.
+So `smoke` and `nightly` run the bot with production flags and enforce every
+budget, while `hygiene` runs with the debug flags and checks **hygiene only**
+(tracebacks, un-awaited coroutines, resource warnings) — it reports the timing
+numbers without asserting them. CI runs `smoke` and `hygiene` on every PR and
+`nightly` on a schedule.
 
-The bot measures per-update **handler latency** and **event-loop lag** in bounded
-histograms and logs one `soak-metrics ...` line on shutdown (and on `SIGUSR1`).
-The harness samples RSS and FD count every 5 s. `scripts/soak_check.py` — which
-owns the pass/fail thresholds and is unit-tested in
+The bot measures per-update **handler latency** and **event-loop lag** and logs a
+`soak-metrics ...` line on shutdown (and on `SIGUSR1`), plus the ten largest
+`soak-lag-event` lines (each with its elapsed time). Lag is split into a
+**warm-up** window (the first 60 s, matching the RSS warm-up) and **steady state**,
+so a startup transient does not fail the steady-state budgets while a genuine
+startup hang still does. The line includes `uptime_seconds` — the bot's own
+processing window, the denominator for the achieved rate. The mock's soak feed
+serves up to `--soak-batch` updates per `getUpdates` (default 100, Telegram's
+real limit) so the achieved rate tracks the requested rate; its pending queue is
+capped at a few seconds of backlog, and a bot that cannot keep up has the oldest
+queued updates dropped (with a warning) instead of growing the queue without
+bound. The harness samples RSS and FD count every 5 s. `scripts/soak_check.py` —
+which owns the pass/fail thresholds and is unit-tested in
 `tests/unit/test_soak_check.py` — fails the run on:
 
 - handler-latency p99 > 50 ms;
-- event-loop lag > 100 ms (see [`docs/adr/0002-python-loop-lag-budget.md`](adr/0002-python-loop-lag-budget.md));
+- loop lag: warm-up max > 1000 ms (a startup hang); steady-state p99 > 100 ms or
+  steady-state max > 250 ms (see
+  [`docs/adr/0002-python-loop-lag-budget.md`](adr/0002-python-loop-lag-budget.md));
+- achieved update rate < 80 % of the requested rate (the minimum handler-sample
+  count is derived from the run: `0.8 * rate * seconds`, never a fixed default);
 - RSS growth > 10 % after a 60 s warm-up (linear-regression slope);
 - FD count not flat;
 - any traceback, `Task exception was never retrieved`, or `was never awaited`;
 - a non-zero bot exit.
 
-Environment overrides: `SOAK_SECONDS`, `SOAK_RATE`, `SOAK_MIN_CALLS`.
+Environment overrides: `SOAK_SECONDS`, `SOAK_RATE`, `SOAK_BATCH`.

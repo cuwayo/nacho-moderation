@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Gen-2 GC pauses stalled the event loop under sustained load.** At 1000
+  updates/s the soak measured isolated >100 ms event-loop-lag spikes after
+  warm-up, at ~10 s intervals. Instrumenting `gc.callbacks` attributed them to
+  gen-2 collections walking the large, stable long-lived object graph (the
+  aiogram bot, dispatcher, services, caches, and every pydantic type); disabling
+  gen-2 GC after startup dropped the steady-state lag max from ~174 ms to ~76 ms
+  with no post-warm-up event over 100 ms. `run_bot` now calls
+  `gc.freeze()` once, after startup, moving that graph to CPython's permanent
+  generation so the collector never scans it again; per-update objects stay
+  collectable. See [ADR 0002](docs/adr/0002-python-loop-lag-budget.md).
 - **`/promote` no longer loses a promotion when the title call fails.** Bot API
   9.3 moved `setChatAdministratorCustomTitle` out of `promoteChatMember`, so the
   command makes two calls. If the promotion succeeded but the title call raised,
@@ -63,6 +73,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The soak test now measures real load.** The mock served one update per
+  `getUpdates` (`SOAK_BATCH = 1`), so a "1000/s" run actually carried ~3 % of its
+  stated load (throughput was capped at the ~26 updates/s poll round-trip) while
+  the gate passed against a fixed minimum of 1. The mock now serves up to 100
+  updates per reply (Telegram's real default), configurable with `--soak-batch`,
+  and its pending-update queue is bounded (oldest dropped, with a warning, past
+  5 s of backlog). The gate derives its minimum handler-sample count from the run
+  itself (`>= 0.8 * rate * measured_seconds`), prints the requested rate, achieved
+  rate (`latency_count / seconds`), and handler sample count, and fails when the
+  achieved rate is below 80 % of the requested rate. Loop lag is split into a
+  warm-up window (first 60 s; only a startup hang over 1000 ms fails) and steady
+  state (p99 <= 100 ms, max <= 250 ms), and the ten largest lag events are logged
+  with their elapsed time. The metrics line carries `uptime_seconds` and the
+  windowed lag numbers; the histogram's open-ended bucket now reports the observed
+  maximum instead of `inf`. Timing budgets run with production flags: `smoke`
+  and `nightly` enforce every budget, and a new `hygiene` mode runs under
+  `PYTHONASYNCIODEBUG`/`-X dev` and checks hygiene only. Measured numbers are in
+  [ADR 0002](docs/adr/0002-python-loop-lag-budget.md).
 - **Python toolchain hardening.** The lint set gains `D` (Google docstrings),
   `ANN`, `PT`, `PL`, `PERF`, `TRY`, `ARG`, `ERA`, `T20`, `LOG`, `G`, `PTH`, and
   `FBT` (every `ignore` justified in `pyproject.toml`); `mypy --strict` now

@@ -2,17 +2,27 @@
 # run_soak.sh - replay a sustained update load against the mock Bot API server
 # and check the bot stays healthy.
 #
-# Usage: scripts/run_soak.sh [mode] [--seconds N] [--rate R]
-#   mode       "smoke" (30 s, every PR) or "nightly" (600 s @ 1000/s, default)
+# Usage: scripts/run_soak.sh [mode] [--seconds N] [--rate R] [--batch B]
+#   mode       "smoke"   (30 s @ 1000/s, production flags, full gate; every PR)
+#              "nightly" (600 s @ 1000/s, production flags, full gate)
+#              "hygiene" (30 s, PYTHONASYNCIODEBUG + -X dev; hygiene only)
 #
 # Environment overrides:
-#   SOAK_SECONDS, SOAK_RATE, SOAK_MIN_CALLS
+#   SOAK_SECONDS, SOAK_RATE, SOAK_BATCH
 #
 # The bot's getUpdates long-poll drains synthetic messages queued by the mock's
-# --soak mode. The bot records per-update handler latency and event-loop lag in
-# a histogram and logs a `soak-metrics ...` summary on shutdown (and on SIGUSR1).
+# --soak mode; each poll serves up to SOAK_BATCH updates (default 100, Telegram's
+# real limit) so the achieved rate tracks the requested rate. The bot records
+# per-update handler latency and event-loop lag (split into warm-up and steady
+# windows) and logs a `soak-metrics ...` summary on shutdown (and on SIGUSR1).
 # This script samples RSS and FD count every 5 s, then hands the artifacts to
 # scripts/soak_check.py, which owns the pass/fail thresholds.
+#
+# Timing budgets (latency, loop lag) are only meaningful with production flags:
+# PYTHONASYNCIODEBUG and -X dev inflate them by an order of magnitude, so the
+# "hygiene" mode checks tracebacks, un-awaited coroutines, and resource warnings
+# (and reports the timing numbers without asserting them) while "smoke" and
+# "nightly" run with production flags and enforce every budget.
 
 set -euo pipefail
 
@@ -21,35 +31,39 @@ shift || true
 
 SECONDS_TO_RUN="${SOAK_SECONDS:-}"
 RATE="${SOAK_RATE:-}"
-MIN_CALLS="${SOAK_MIN_CALLS:-1}"
+BATCH="${SOAK_BATCH:-100}"
 
-# Parse optional --seconds/--rate overrides.
+# Parse optional --seconds/--rate/--batch overrides.
 while [ $# -gt 0 ]; do
   case "$1" in
     --seconds) SECONDS_TO_RUN="$2"; shift 2 ;;
     --rate) RATE="$2"; shift 2 ;;
-    --min-calls) MIN_CALLS="$2"; shift 2 ;;
+    --batch) BATCH="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
-# Mode defaults: the smoke mode is short and uses asyncio debug to catch slow
-# callbacks and unclosed resources; the nightly run is the full load.
 DEBUG_ENV=()
+PYTHON_DEBUG_FLAGS=()
+CHECK_FLAGS=()
 case "$MODE" in
   smoke)
     SECONDS_TO_RUN="${SECONDS_TO_RUN:-30}"
     RATE="${RATE:-1000}"
-    DEBUG_ENV=(PYTHONASYNCIODEBUG=1)
-    PYTHON_DEBUG_FLAGS=(-X dev -W error::ResourceWarning)
     ;;
   nightly)
     SECONDS_TO_RUN="${SECONDS_TO_RUN:-600}"
     RATE="${RATE:-1000}"
-    PYTHON_DEBUG_FLAGS=()
+    ;;
+  hygiene)
+    SECONDS_TO_RUN="${SECONDS_TO_RUN:-30}"
+    RATE="${RATE:-1000}"
+    DEBUG_ENV=(PYTHONASYNCIODEBUG=1)
+    PYTHON_DEBUG_FLAGS=(-X dev -W error::ResourceWarning)
+    CHECK_FLAGS=(--hygiene-only)
     ;;
   *)
-    echo "unknown mode: $MODE (expected 'smoke' or 'nightly')" >&2
+    echo "unknown mode: $MODE (expected 'smoke', 'nightly' or 'hygiene')" >&2
     exit 2
     ;;
 esac
@@ -93,9 +107,10 @@ level = "info"
 EOF
 chmod 600 "$CONFIG"
 
-echo "soak: mode=$MODE ${SECONDS_TO_RUN}s @ ${RATE}/s (min calls ${MIN_CALLS})"
+echo "soak: mode=$MODE ${SECONDS_TO_RUN}s @ ${RATE}/s batch ${BATCH}"
+START_EPOCH="$(date +%s)"
 python3 tests/mock/mock_tg_server.py --port "$PORT" --soak "$((SECONDS_TO_RUN + 30))" --rate "$RATE" \
-  --log "$CALLS" >"$WORKDIR/mock.log" 2>&1 &
+  --soak-batch "$BATCH" --log "$CALLS" >"$WORKDIR/mock.log" 2>&1 &
 MOCK_PID=$!
 
 # Wait for the mock to accept connections.
@@ -148,11 +163,15 @@ kill "$MOCK_PID" 2>/dev/null || true
 wait "$MOCK_PID" 2>/dev/null || true
 
 CALL_COUNT="$(wc -l < "$CALLS" 2>/dev/null || echo 0)"
-echo "soak: ${CALL_COUNT} API calls recorded; $(wc -l < "$SAMPLES") samples"
+END_EPOCH="$(date +%s)"
+MEASURED_SECONDS=$((END_EPOCH - START_EPOCH))
+echo "soak: ${CALL_COUNT} API calls recorded over ${MEASURED_SECONDS}s; $(wc -l < "$SAMPLES") samples"
 
 uv run python scripts/soak_check.py \
   --bot-log "$LOG" \
   --samples "$SAMPLES" \
   --calls "$CALLS" \
   --exit-code "$BOT_EXIT" \
-  --min-calls "$MIN_CALLS"
+  --rate "$RATE" \
+  --seconds "$MEASURED_SECONDS" \
+  "${CHECK_FLAGS[@]}"

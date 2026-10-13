@@ -7,6 +7,7 @@ real event loop without TLS or a real token, using `api.base = http://127.0.0.1:
 
 Usage:
     python3 tests/mock/mock_tg_server.py --port 8081 [--scenario FILE] [--log FILE]
+    python3 tests/mock/mock_tg_server.py --port 8081 --soak 30 --rate 1000 --soak-batch 100
 
 Behaviour:
   * Without a scenario every `getMe` returns a fixed identity and every
@@ -14,6 +15,11 @@ Behaviour:
     test can observe the offset advance).
   * With `--scenario FILE` the JSON scenario drives the responses; a fault
     injection list can force 429/500/reset/malformed replies.
+  * With `--soak SECONDS` a background feeder queues synthetic updates at
+    `--rate`/s for that long, and each `getUpdates` serves up to `--soak-batch`
+    of them (default 100, Telegram's real limit). The pending queue is capped at
+    a few seconds of backlog; a bot that cannot keep up has its oldest queued
+    updates dropped (with a warning) rather than growing the queue without bound.
 
 The `HANDLERS` registry below lists every method the server implements; it is the
 source of truth for consistency check C9 (every method in `api_methods.def` must
@@ -128,12 +134,18 @@ _BOOL_METHODS = frozenset(
     }
 )
 
-# Maximum number of updates returned in one getUpdates reply during a soak run.
-# One at a time: the poller processes every update in a reply synchronously within
-# a single event-loop iteration, so a large reply would make one iteration do
-# batch-sized work and defeat the per-iteration stall gate. The soak varies the
-# *rate* (updates/s), not the batch size.
-SOAK_BATCH = 1
+# Telegram's real getUpdates default: at most 100 updates per reply. The soak
+# serves up to this many per poll so the *achieved* update rate tracks the
+# requested rate instead of being capped by the poll round-trip rate (one update
+# per poll tops out around 26 updates/s). The soak varies the rate; the batch is
+# a separate knob, configurable with ``--soak-batch``.
+SOAK_BATCH_DEFAULT = 100
+
+#: Cap on the mock's pending-update queue, expressed in seconds of backlog at the
+#: requested rate. A bot that drains slower than the feeder fills would otherwise
+#: grow the queue without limit (memory) and then receive an enormous first batch.
+#: Beyond this, the oldest queued updates are dropped and a warning is logged.
+SOAK_MAX_BACKLOG_SECONDS = 5.0
 
 
 class MockState:
@@ -150,9 +162,15 @@ class MockState:
         # Soak mode: a background thread feeds synthetic updates at a target rate.
         self.soak = False
         self.soak_rate = 1000
+        # Maximum updates returned in one getUpdates reply (Telegram's default 100).
+        self.soak_batch = SOAK_BATCH_DEFAULT
+        # Pending-update cap in updates (rate * SOAK_MAX_BACKLOG_SECONDS); 0 = unbounded.
+        self.soak_max_backlog = 0
         self.soak_until = 0.0
         self.soak_batches: list[dict[str, Any]] = []
         self.soak_next_id = 1
+        self.soak_dropped = 0
+        self.soak_warned_at = 0.0
         self.soak_started = threading.Event()
         self.soak_lock = threading.Lock()
 
@@ -165,13 +183,12 @@ class MockState:
             # The bot's first getUpdates marks steady state: start the feeder now so
             # no startup backlog accumulates into one oversized batch.
             self.soak_started.set()
-            # Cap the batch at SOAK_BATCH so a single loop iteration processes a
-            # bounded amount of work; the rate, not the batch size, is what the soak
-            # varies. (Telegram's default limit is 100, which under a sanitizer
-            # build would exceed the 5 ms loop-stall budget in one dispatch.)
+            # Serve up to ``soak_batch`` queued updates (Telegram's default is 100)
+            # so the achieved rate tracks the requested rate rather than the poll
+            # round-trip rate.
             with self.soak_lock:
-                batch = self.soak_batches[:SOAK_BATCH]
-                del self.soak_batches[:SOAK_BATCH]
+                batch = self.soak_batches[: self.soak_batch]
+                del self.soak_batches[: self.soak_batch]
             return {"ok": True, "result": batch}
         return {"ok": True, "result": []}
 
@@ -182,22 +199,42 @@ class MockState:
             return faults.pop(0)
         return None
 
+    def _enqueue_soak_update(self) -> None:
+        """Queue one synthetic update, dropping the oldest past the backlog cap."""
+        with self.soak_lock:
+            self.soak_batches.append(_soak_update(self.soak_next_id))
+            self.soak_next_id += 1
+            backlog = len(self.soak_batches)
+            if self.soak_max_backlog and backlog > self.soak_max_backlog:
+                drop = backlog - self.soak_max_backlog
+                del self.soak_batches[:drop]
+                self.soak_dropped += drop
+                now = time.monotonic()
+                if now - self.soak_warned_at >= 1.0:
+                    self.soak_warned_at = now
+                    print(
+                        f"mock-tg: soak backlog {backlog} updates "
+                        f"(> {SOAK_MAX_BACKLOG_SECONDS:.0f}s at {self.soak_rate}/s); "
+                        f"dropped {drop}, {self.soak_dropped} total",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+
     def soak_feeder(self) -> None:
         """Generate updates at ~soak_rate/s until soak_until elapses.
 
         Updates are queued (not served) here; the bot's getUpdates long-poll drains
         the queue, so the actual delivery rate is bounded by how fast the bot polls
         and processes them, which is what the soak test measures. The feeder waits
-        for the bot's first poll (soak_started) so no startup backlog accumulates,
-        then queues one update per tick for small, realistic batches.
+        for the bot's first poll (soak_started) so no startup backlog accumulates.
+        Each poll serves up to ``soak_batch`` updates, so a healthy bot sees the
+        full requested rate; a slow one hits the backlog cap and drops the excess.
         """
         self.soak_started.wait(timeout=30.0)
         interval = 1.0 / max(self.soak_rate, 1)
         next_at = time.monotonic()
         while time.monotonic() < self.soak_until:
-            with self.soak_lock:
-                self.soak_batches.append(_soak_update(self.soak_next_id))
-                self.soak_next_id += 1
+            self._enqueue_soak_update()
             next_at += interval
             delay = next_at - time.monotonic()
             if delay > 0:
@@ -384,6 +421,12 @@ def main() -> int:
     parser.add_argument(
         "--rate", type=int, default=1000, help="soak updates per second (default 1000)"
     )
+    parser.add_argument(
+        "--soak-batch",
+        type=int,
+        default=SOAK_BATCH_DEFAULT,
+        help=f"max updates per getUpdates reply in soak mode (default {SOAK_BATCH_DEFAULT})",
+    )
     parser.add_argument("--list-handlers", action="store_true", help="print HANDLERS and exit")
     args = parser.parse_args()
 
@@ -403,6 +446,8 @@ def main() -> int:
     if args.soak > 0:
         state.soak = True
         state.soak_rate = args.rate
+        state.soak_batch = max(1, args.soak_batch)
+        state.soak_max_backlog = max(1, int(args.rate * SOAK_MAX_BACKLOG_SECONDS))
         state.soak_until = time.monotonic() + args.soak
         feeder = threading.Thread(target=state.soak_feeder, daemon=True)
         feeder.start()

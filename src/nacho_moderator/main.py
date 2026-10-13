@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gc
 import signal
 import sys
 from pathlib import Path
@@ -92,7 +93,7 @@ async def build_app(config: Settings, bot: Bot) -> App:
         clock=clock,
         bot_username=me.username,
         bot_id=me.id,
-        metrics=Metrics(),
+        metrics=Metrics(clock),
     )
     build_dispatcher(app)
     return app
@@ -170,6 +171,29 @@ def _clear_aiogram_caches() -> None:
         _log.debug("could not clear aiogram caches", exc_info=True)
 
 
+def freeze_gc_after_startup() -> None:
+    """Move long-lived objects out of the cyclic GC's scan set.
+
+    After startup the bot holds a large, stable object graph (the aiogram bot,
+    dispatcher, services, caches, and every pydantic type). A generational GC
+    pass over that graph is a *stop-the-world* pause of tens of milliseconds on
+    the event loop — the soak measured >100 ms gen-2 pauses at 1000 updates/s
+    that were entirely GC, not per-update work. ``gc.collect()`` first drains
+    any garbage, then ``gc.freeze()`` moves every surviving object to CPython's
+    permanent generation, which the collector never scans again. Objects created
+    afterwards (per-update ``Update``/``Message``/context) stay collectable, so
+    cyclic garbage is still reclaimed.
+
+    Call this once, after the long-lived graph exists and before serving load.
+    It is a no-op if the platform lacks ``gc.freeze`` (Python < 3.7).
+    """
+    if not hasattr(gc, "freeze"):  # pragma: no cover - Python >= 3.7 always has it
+        return
+    gc.collect()
+    gc.freeze()
+    _log.info("froze the long-lived object graph for the cyclic GC")
+
+
 async def run_bot(config: Settings) -> int:
     """Run the bot until it is asked to stop."""
     bot = build_bot(config)
@@ -177,6 +201,9 @@ async def run_bot(config: Settings) -> int:
     app = await build_app(config, bot)
     _log.info("getMe ok: id=%s username=%s", app.bot_id, app.bot_username)
     await publish_commands(bot)
+    # The long-lived object graph now exists; keep the cyclic GC from scanning it
+    # (a gen-2 pause on the event loop is a user-visible stall at high load).
+    freeze_gc_after_startup()
 
     stop = asyncio.Event()
     _install_signal_handlers(stop)

@@ -9,6 +9,7 @@ real aiogram dispatcher.
 from __future__ import annotations
 
 import asyncio
+import gc
 import signal
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,6 +33,7 @@ from nacho_moderator.main import (
     _run_webhook,
     build_app,
     build_bot,
+    freeze_gc_after_startup,
     main,
     run_bot,
 )
@@ -230,6 +232,25 @@ def test_clear_aiogram_caches_empties_the_update_cache() -> None:
     _clear_aiogram_caches()
     descriptor = Update.__dict__["event_type"]
     assert descriptor.fget.cache_info().currsize == 0
+
+
+def test_freeze_gc_after_startup_calls_collect_then_freeze(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The freeze drains garbage, then freezes the surviving graph."""
+    calls: list[str] = []
+    monkeypatch.setattr(gc, "collect", lambda: calls.append("collect"))
+    monkeypatch.setattr(gc, "freeze", lambda: calls.append("freeze"))
+    freeze_gc_after_startup()
+    assert calls == ["collect", "freeze"]
+
+
+def test_freeze_gc_after_startup_is_a_noop_without_freeze(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A platform without ``gc.freeze`` does not raise."""
+    monkeypatch.delattr(gc, "freeze", raising=False)
+    freeze_gc_after_startup()  # no error
 
 
 # --- run_bot -----------------------------------------------------------------
