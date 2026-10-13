@@ -110,6 +110,11 @@ members, and pin messages. It never grants `can_promote_members`,
 
 - The bot must itself hold `can_promote_members`.
 - The title is HTML-escaped when echoed and truncated to Telegram's limit.
+- The promotion and the title are separate Bot API calls (Bot API 9.3 moved the
+  title out of `promoteChatMember`). If the promotion succeeds but the title call
+  fails, the promotion is still recorded and the reply is
+  "Promoted, but the title could not be set." — the title is never reported as
+  applied.
 
 ### /demote
 

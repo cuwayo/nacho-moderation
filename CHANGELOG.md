@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`/promote` no longer loses a promotion when the title call fails.** Bot API
+  9.3 moved `setChatAdministratorCustomTitle` out of `promoteChatMember`, so the
+  command makes two calls. If the promotion succeeded but the title call raised,
+  the old code replied "Telegram rejected that change" and recorded nothing,
+  although the user *was* promoted. The two calls are now handled separately: the
+  promotion is recorded, and the reply is "Promoted, but the title could not be
+  set." The success reply never claims a title Telegram refused.
 - **`test_config_example_validates` failed on a fresh checkout.** Git checks the
   tracked `config/config.example.toml` out as 0644 (umask 022), and the P2
   permission check refuses a group/other-readable secret, so the test failed in

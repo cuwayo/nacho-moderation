@@ -28,6 +28,7 @@ _OWNER = "I cannot change the owner's rights."
 _SELF = "I cannot change my own rights."
 _NOT_MINE = "I can only demote administrators I promoted myself; Telegram rejects the rest."
 _TELEGRAM_REJECTED = "Telegram rejected that change."
+_TITLE_REJECTED = "Promoted, but the title could not be set."
 
 #: The only rights /promote ever grants. Deliberately excludes
 #: can_promote_members, can_change_info and can_manage_chat.
@@ -94,19 +95,26 @@ async def cmd_promote(ctx: CommandContext) -> None:
             user_id=ctx.target_id,
             **_PROMOTION_RIGHTS,
         )
-        if title:
-            await ctx.bot.set_chat_administrator_custom_title(
-                chat_id=ctx.chat_id,
-                user_id=ctx.target_id,
-                custom_title=title,
-            )
     except TelegramAPIError as exc:
         _log.warning("promote failed for %s: %s", ctx.target_id, exc)
         await ctx.reply(_TELEGRAM_REJECTED)
         return
 
+    # The promotion succeeded, so record it before the (separate) title call: a
+    # failed title must not lose the fact that the user *was* promoted.
     await ctx.record_action("promote", ctx.target_id, title, ctx.now(), None, ctx.target_label)
+
     if title:
+        try:
+            await ctx.bot.set_chat_administrator_custom_title(
+                chat_id=ctx.chat_id,
+                user_id=ctx.target_id,
+                custom_title=title,
+            )
+        except TelegramAPIError as exc:
+            _log.warning("promote title failed for %s: %s", ctx.target_id, exc)
+            await ctx.reply(_TITLE_REJECTED)
+            return
         await ctx.reply_html(f"Promoted with title “{html_escape(title)}”.")
     else:
         await ctx.reply("Promoted.")

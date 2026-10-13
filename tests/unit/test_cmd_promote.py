@@ -155,6 +155,33 @@ async def test_promote_maps_telegram_error(
     assert "Telegram rejected" in fake_bot.texts()[-1]
 
 
+async def test_promote_records_when_only_the_title_fails(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    """A failed title must not lose the promotion or say the whole change failed."""
+    fake_bot.fail = {"set_chat_administrator_custom_title"}
+    fake_bot.error = TelegramBadRequest(method=None, message="TITLE_INVALID")  # type: ignore[arg-type]
+    ctx = _ctx(fake_bot, db, fake_clock, args="Moderator")
+    await promote.cmd_promote(ctx)
+    # The promotion call still went out and is recorded.
+    assert fake_bot.called("promote_chat_member")
+    assert "promote" in await _actions(db, ctx.chat_id)
+    # The reply says the promotion stuck but the title did not.
+    assert fake_bot.texts()[-1] == "Promoted, but the title could not be set."
+    assert "Telegram rejected" not in fake_bot.texts()[-1]
+
+
+async def test_promote_title_failure_does_not_claim_the_title(
+    fake_bot: FakeBot, db: Database, fake_clock: FakeClock
+) -> None:
+    """The success reply never claims a title that Telegram refused."""
+    fake_bot.fail = {"set_chat_administrator_custom_title"}
+    fake_bot.error = TelegramBadRequest(method=None, message="TITLE_INVALID")  # type: ignore[arg-type]
+    ctx = _ctx(fake_bot, db, fake_clock, args="Moderator")
+    await promote.cmd_promote(ctx)
+    assert all("Promoted with title" not in text for text in fake_bot.texts())
+
+
 # --- /demote ---------------------------------------------------------------
 
 
