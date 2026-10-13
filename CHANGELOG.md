@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`test_config_example_validates` failed on a fresh checkout.** Git checks the
+  tracked `config/config.example.toml` out as 0644 (umask 022), and the P2
+  permission check refuses a group/other-readable secret, so the test failed in
+  CI and on every clone. It now copies the example into `tmp_path`, `chmod 600`,
+  and validates the copy — the same mode a real deployment uses — without
+  weakening the permission check or reaching for `--allow-insecure-config`. A
+  regression test materialises a fresh checkout under `umask 022` and asserts
+  the copy validates.
 - Logging a single mapping argument (`log.info("x %s", {"a": 1})`) printed `x a`
   instead of `x {'a': 1}`: the old redacting filter iterated the mapping's keys.
   Redaction no longer mutates `record.msg`/`record.args`, so mapping and tuple

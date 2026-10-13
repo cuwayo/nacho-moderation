@@ -25,8 +25,11 @@ Checks:
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
+import shutil
+import stat
 import subprocess
 import tomllib
 from pathlib import Path
@@ -35,7 +38,8 @@ import pytest
 
 from nacho_moderator.commands.publish import _bot_commands
 from nacho_moderator.commands.registry import COMMANDS
-from nacho_moderator.config import Settings
+from nacho_moderator.config import Settings, check_file_permissions
+from nacho_moderator.errors import ConfigError
 
 REPO = Path(__file__).resolve().parents[1]
 DOCS = REPO / "docs"
@@ -224,10 +228,20 @@ def test_documented_keys_exist_in_model() -> None:
     assert not extra, f"documented keys absent from the model: {sorted(extra)}"
 
 
-def test_config_example_validates() -> None:
+def test_config_example_validates(tmp_path: Path) -> None:
+    """The committed example validates from a private copy.
+
+    Git checks a repo file out as 0644 (umask 022), and the example holds a
+    placeholder secret, so the P2 permission check refuses the tracked file on a
+    fresh clone. Copy it to a temp file, ``chmod 600``, and validate the copy —
+    the same mode a real deployment uses (``install -m 0600``).
+    """
     example = REPO / "config" / "config.example.toml"
+    copy = tmp_path / "config.example.toml"
+    shutil.copyfile(example, copy)
+    copy.chmod(0o600)
     result = subprocess.run(
-        ["uv", "run", "nacho-moderator", "--check-config", str(example)],
+        ["uv", "run", "nacho-moderator", "--check-config", str(copy)],
         capture_output=True,
         text=True,
         cwd=REPO,
@@ -235,9 +249,56 @@ def test_config_example_validates() -> None:
     )
     assert result.returncode == 0, result.stderr
     # Placeholder secrets, not real ones.
-    data = tomllib.loads(example.read_text(encoding="utf-8"))
+    data = tomllib.loads(copy.read_text(encoding="utf-8"))
     assert "REPLACE" in data["bot_token"]
     assert "REPLACE" in data["webhook"]["secret"]
+
+
+def test_config_example_is_refused_when_world_readable(tmp_path: Path) -> None:
+    """The committed example itself is 0644 (git's checkout mode) and is refused.
+
+    This documents *why* the validation above must copy and chmod: the example
+    holds a placeholder secret, so the permission check applies to it too. A
+    fresh clone checks the tracked file out 0644, which is exactly the mode the
+    old test fed to ``--check-config``.
+    """
+    copy = tmp_path / "config.example.toml"
+    shutil.copyfile(REPO / "config" / "config.example.toml", copy)
+    copy.chmod(0o644)
+    with pytest.raises(ConfigError):
+        check_file_permissions(copy)
+
+
+def test_fresh_checkout_config_example_passes_check_config(tmp_path: Path) -> None:
+    """Regression for F1: a fresh checkout (umask 022) validates the example.
+
+    The old test ran ``--check-config`` on the tracked file, which git checks out
+    0644 under umask 022, so the permission check refused it and the test failed
+    on every clone. Here the example is materialised the way a fresh ``git
+    checkout`` does (0644), then copied and ``chmod 600`` exactly as the fixed
+    test does, and the copy validates cleanly.
+    """
+    previous_umask = os.umask(0o022)
+    try:
+        checkout = tmp_path / "checkout"
+        checkout.mkdir()
+        example = checkout / "config.example.toml"
+        shutil.copyfile(REPO / "config" / "config.example.toml", example)
+        example.chmod(0o644)  # git's checkout mode under umask 022
+        assert stat.S_IMODE(example.stat().st_mode) == 0o644
+        private = checkout / "config.private.toml"
+        shutil.copyfile(example, private)
+        private.chmod(0o600)
+        result = subprocess.run(
+            ["uv", "run", "nacho-moderator", "--check-config", str(private)],
+            capture_output=True,
+            text=True,
+            cwd=REPO,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+    finally:
+        os.umask(previous_umask)
 
 
 def test_help_matches_readme_and_golden() -> None:

@@ -84,7 +84,10 @@ fails when the prose docs drift from them:
 - the README command table lists exactly the registry's commands;
 - every `Settings` key appears in `docs/configuration.md`, and
   `config/config.example.toml` validates under `--check-config` with placeholder
-  secrets;
+  secrets. The example is validated from a **`chmod 600` copy** in `tmp_path`, not
+  in place: git checks the tracked file out 0644, and the P2 permission check
+  (correctly) refuses a group/other-readable secret. A regression test materialises
+  a fresh checkout under `umask 022` and asserts the copy validates;
 - `nacho-moderator --help` equals the golden `docs/cli-help.txt` and the flags
   are documented in the README;
 - `setMyCommands` payloads obey Telegram's limits and the group scope is a subset
