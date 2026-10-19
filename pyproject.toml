@@ -19,23 +19,23 @@ nacho-moderator = "nacho_moderator.main:main"
 Repository = "https://github.com/cuwayo/nacho-moderation"
 
 [build-system]
-requires = ["uv_build>=0.12.13,<0.13.0"]
+requires = ["uv_build>=0.12.13,<0.14.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "hypothesis==6.169.0",
+    "hypothesis==6.170.0",
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     "pytest-cov==7.1.0",
     "pytest-randomly==5.0.0",
     "pytest-timeout==2.4.0",
     "pytest-xdist==3.8.0",
-    "ruff==0.17.0",
+    "ruff==0.17.1",
     "mypy==2.4.0",
     "pdoc==16.0.0",
     "detect-secrets==1.5.0",
-    "pre-commit==4.6.2",
+    "pre-commit==4.7.0",
 ]
 
 [tool.uv]
